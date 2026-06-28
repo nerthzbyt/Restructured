@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Logs
+logs/
+*.log
+
+# Environment variables
+.env*
+
+# IDE files
+.idea/
+
+# Large data/model files
+xgboost_model.joblib
+
+# history
+.history/

@@ -1,0 +1,11 @@
+aiohttp
+numpy
+optuna
+uvicorn
+python-dotenv
+fastapi
+SQLAlchemy
+websockets
+
+typing
+pydantic
