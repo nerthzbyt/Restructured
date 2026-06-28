@@ -286,34 +286,32 @@ def timeframe_to_bybit_interval (timeframe: str) -> str:
     return mapping.get (timeframe, timeframe.replace ("m", ""))
 
 
-def _resolve_capital_inicial (prev_initial: Any, prev_source: Any, capital_source: str, capital_actual: float) -> float:
+def _resolve_capital_inicial(prev_initial: Any, prev_source: Any, capital_source: str, capital_actual: float) -> float:
     try:
-        prev_initial_f = float (prev_initial)
-    except Exception:
-        prev_initial_f = 0.0
-
-    try:
-        cfg_capital = float (config.CAPITAL_USDT)
+        cfg_capital = float(config.CAPITAL_USDT)
     except Exception:
         cfg_capital = 0.0
 
+    if cfg_capital > 0:
+        return cfg_capital
+
     try:
-        capital_actual_f = float (capital_actual)
+        prev_initial_f = float(prev_initial)
+    except Exception:
+        prev_initial_f = 0.0
+
+    if prev_initial_f > 0:
+        return prev_initial_f
+
+    try:
+        capital_actual_f = float(capital_actual)
     except Exception:
         capital_actual_f = 0.0
 
-    if prev_initial_f > 0:
-        if capital_source == "bybit_wallet_balance" and capital_actual_f > 0:
-            if cfg_capital > 0 and abs (prev_initial_f - cfg_capital) <= 1e-9 and abs (
-                    capital_actual_f - cfg_capital) > 1e-9:
-                return capital_actual_f
-            if prev_source != "bybit_wallet_balance" and (prev_initial_f / capital_actual_f) < 0.5:
-                return capital_actual_f
-        return prev_initial_f
-
-    if capital_source == "bybit_wallet_balance":
+    if capital_source == "bybit_wallet_balance" and capital_actual_f > 0:
         return capital_actual_f
-    return cfg_capital
+
+    return 0.0
 
 
 # Función para actualizar orderbook
