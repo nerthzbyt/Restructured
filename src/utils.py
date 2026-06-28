@@ -1970,6 +1970,8 @@ def save_results(results: dict, log_dir: str = "logs") -> None:
                         "last_metrics",
                         "thresholds",
                         "last_balance",
+                        "metadata",
+                        "summary",
                     )
                     for key in keys:
                         if key in existing and key not in results:
