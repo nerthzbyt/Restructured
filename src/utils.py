@@ -1311,24 +1311,32 @@ def calculate_metrics(
         def _z(current: float, key: str) -> float:
             xs: List[float] = []
             for h in history:
-                if not isinstance(h, dict):
-                    continue
-                v = h.get(key)
-                if v is None:
-                    continue
-                try:
-                    xs.append(float(v))
-                except Exception:
-                    continue
+                if isinstance(h, dict):
+                    v = h.get(key)
+                    if v is not None:
+                        try:
+                            xs.append(float(v))
+                        except Exception:
+                            pass
             xs.append(float(current))
-            if len(xs) < 5:
+            
+            n = len(xs)
+            if n < 2:
                 return 0.0
+                
             arr = np.array(xs, dtype=np.float64)
             mu = float(np.mean(arr))
             sd = float(np.std(arr))
+            
             if sd <= 1e-12:
                 return 0.0
-            return (float(current) - mu) / sd
+                
+            z = (float(current) - mu) / sd
+            
+            if n < 5:
+                z *= (n / 5.0)
+                
+            return z
 
         pio_z = _z(pio_raw, "pio")
         ild_z = _z(ild_raw, "ild")
