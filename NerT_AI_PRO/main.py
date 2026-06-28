@@ -743,10 +743,54 @@ async def lifespan(_: FastAPI):
         preflight = {"success": False, "message": str(e)}
 
     if bool(preflight.get("success")):
+        # FIX #4: Restaurar thresholds calibrados desde DB al arrancar.
+        # Sin esto, cada reinicio vuelve al .env ignorando el historial
+        # acumulado por el optimizador y el agent_tick.
+        try:
+            with nertzh.SessionLocal() as _db:
+                last_th = (
+                    _db.query(nertzh.ThresholdSnapshot)
+                    .order_by(nertzh.ThresholdSnapshot.timestamp.desc())
+                    .first()
+                )
+                if last_th is not None:
+                    nertzh.config.COMBINED_BUY_THRESHOLD = float(
+                        last_th.combined_buy_threshold
+                    )
+                    nertzh.config.COMBINED_SELL_THRESHOLD = float(
+                        last_th.combined_sell_threshold
+                    )
+                    nertzh.logger.info(
+                        f"Thresholds restaurados desde DB -> "
+                        f"buy={last_th.combined_buy_threshold:.4f}  "
+                        f"sell={last_th.combined_sell_threshold:.4f}"
+                    )
+                    # Restaurar pesos si fueron guardados en stats
+                    stats = last_th.stats if isinstance(last_th.stats, dict) else {}
+                    cw = stats.get("combined_weights")
+                    if isinstance(cw, dict):
+                        for sym in nertzh.bot.symbols:
+                            nertzh.bot.ticker_data.setdefault(sym, {})["combined_weights"] = dict(cw)
+                        nertzh.logger.info("Pesos combinados restaurados desde DB.")
+                else:
+                    nertzh.logger.info(
+                        "Sin historial de thresholds en DB, usando valores del .env"
+                    )
+        except Exception as _e:
+            nertzh.logger.warning(f"No se pudo restaurar thresholds desde DB: {_e}")
+
+        # Log del estado del LLM para verificar la configuracion activa
+        _llm_cfg = _llm_config()
+        nertzh.logger.info(
+            f"LLM backend='{_llm_cfg.backend}'  model='{_llm_cfg.model}'  "
+            f"base_url='{_llm_cfg.base_url}'  api_key={'SET' if _llm_cfg.api_key else 'NOT SET'}"
+        )
+
         nertzh.bot.schedule_start()
         nertzh.bot.start_support_loop(interval_s=nertzh.bot.support_interval_s)
         if _monitor_task is None or _monitor_task.done():
             _monitor_task = asyncio.create_task(_monitor_loop())
+
     else:
         try:
             nertzh.logger.error(
@@ -1052,8 +1096,6 @@ async def _run_plan(
         "timestamp": int(time.time() * 1000),
     }
 
-@app.post("/agent/llm_chat")
-
 @app.post("/agent/session/new")
 async def agent_session_new():
     sid = _new_session_id()
@@ -1275,11 +1317,40 @@ def _apply_optimization(symbol: Optional[str], best: Dict[str, Any]) -> Dict[str
                 nertzh.bot.ticker_data.setdefault(sym, {})["combined_weights"] = dict(w)
         applied["weights"] = True
 
+        # FIX #5: Persistir thresholds + pesos a DB para sobrevivir reinicios.
+        # Al arrancar (lifespan), se restauran desde el ultimo ThresholdSnapshot.
+        try:
+            import datetime as _dt
+            with nertzh.SessionLocal() as _db:
+                _snap = nertzh.ThresholdSnapshot(
+                    timestamp=_dt.datetime.now(_dt.timezone.utc),
+                    egm_buy_threshold=float(
+                        getattr(nertzh.config, "EGM_BUY_THRESHOLD", 0.02)
+                    ),
+                    egm_sell_threshold=float(
+                        getattr(nertzh.config, "EGM_SELL_THRESHOLD", -0.02)
+                    ),
+                    combined_buy_threshold=float(
+                        getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 8.0)
+                    ),
+                    combined_sell_threshold=float(
+                        getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -8.0)
+                    ),
+                    stats={"combined_weights": dict(w), "source": "agent_optimize"},
+                )
+                _db.add(_snap)
+                _db.commit()
+                applied["weights_persisted_to_db"] = True
+        except Exception as _e:
+            applied["weights_persisted_to_db"] = False
+            applied["weights_persist_error"] = str(_e)
+
     if bool(getattr(nertzh.config, "PERSIST_THRESHOLDS_TO_ENV", False)):
         env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
         applied["persisted"] = nertzh._persist_thresholds_to_env(env_path)
 
     return applied
+
 
 
 def _parse_strategy_thresholds(strategy: Dict[str, Any]) -> Thresholds:
@@ -1687,6 +1758,15 @@ async def agent_autoevolve(req: AutoEvolveRequest):
 def _evaluate_baseline_for_autoevolve(
     trades: list[Any], th: Thresholds, w: CombinedWeights
 ) -> Dict[str, Any]:
+    """Replica exacta de la lógica de _determine_decision() del motor real.
+
+    CORRECCIONES aplicadas vs versión original:
+    1. Se incluye el componente `mom` (momentum) en el cálculo de combined,
+       igual que utils.py: combined_z = combined_z_micro + w_mom * mom_z
+    2. Se agrega compuerta ok_v2 (ema_diff_rel, igd_n5_n20, cbd_n20)
+       para que el evaluador del optimizer replique la misma lógica OR
+       que usa _determine_decision() en Nertzh.py L1366/1372.
+    """
     selected = 0
     wins = 0
     losses = 0
@@ -1707,23 +1787,39 @@ def _evaluate_baseline_for_autoevolve(
         ild = _safe_float(md.get("ild"), _safe_float(getattr(t, "ild", 0.0), 0.0))
         rol = _safe_float(md.get("rol"), _safe_float(getattr(t, "rol", 0.0), 0.0))
         ogm = _safe_float(md.get("ogm"), _safe_float(getattr(t, "ogm", 0.0), 0.0))
+        # FIX #2: incluir mom igual que utils.py (combined_z_micro + w_mom*mom_z)
+        mom = _safe_float(md.get("mom"), 0.0)
+        ema_diff_rel = _safe_float(md.get("ema_diff_rel"), 0.0)
+        igd_n5_n20 = _safe_float(md.get("igd_n5_n20"), 0.0)
+        cbd_n20 = _safe_float(md.get("cbd_n20"), 0.0)
+
         combined = float(w.scale) * (
             float(w.pio) * pio
             + float(w.egm) * egm
             + float(w.ild) * ild
             + float(w.rol) * rol
             + float(w.ogm) * ogm
+            + float(w.mom) * mom  # FIX #2: mom ahora incluido
         )
         pred = "hold"
         if abs(float(combined)) >= float(th.combined_hold_band):
-            if float(combined) >= float(th.combined_buy_threshold) and (
-                pio > 0 and egm > 0
-            ):
-                pred = "buy"
-            if float(combined) <= float(th.combined_sell_threshold) and (
-                pio < 0 and egm < 0
-            ):
-                pred = "sell"
+            # FIX #3: ok_v2 — réplica exacta de Nertzh.py L1365-1368
+            if float(combined) >= float(th.combined_buy_threshold):
+                ok_v2_buy = (
+                    ema_diff_rel >= 0.0
+                    and igd_n5_n20 >= 0.0
+                    and cbd_n20 >= 0.0
+                )
+                if (pio > 0 and egm > 0) or ok_v2_buy:
+                    pred = "buy"
+            elif float(combined) <= float(th.combined_sell_threshold):
+                ok_v2_sell = (
+                    ema_diff_rel <= 0.0
+                    and igd_n5_n20 <= 0.0
+                    and cbd_n20 >= 0.0
+                )
+                if (pio < 0 and egm < 0) or ok_v2_sell:
+                    pred = "sell"
         if pred != action:
             continue
         selected += 1
