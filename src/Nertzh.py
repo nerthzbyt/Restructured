@@ -1339,6 +1339,7 @@ class NertzMetalEngine:
         ema_diff_rel = float (metrics.get ("ema_diff_rel", 0.0) or 0.0)
         igd_n5_n20 = float (metrics.get ("igd_n5_n20", 0.0) or 0.0)
         cbd_n20 = float (metrics.get ("cbd_n20", 0.0) or 0.0)
+        mom = float (metrics.get ("mom", 0.0) or 0.0)
         buy_th = float (getattr (config, "COMBINED_BUY_THRESHOLD", 8.0) or 8.0)
         sell_th = float (getattr (config, "COMBINED_SELL_THRESHOLD", -8.0) or -8.0)
         hold_band = float (getattr (config, "COMBINED_HOLD_BAND", 2.0) or 2.0)
@@ -1361,13 +1362,13 @@ class NertzMetalEngine:
 
         if combined >= buy_th:
             ok_v2 = (ema_diff_rel >= 0.0 and igd_n5_n20 >= 0.0 and cbd_n20 >= 0.0)
-            if (pio > 0 and egm > 0) or ok_v2:
+            if (pio > 0 and egm > 0 and mom > 0.05) or (ok_v2 and mom > 0.05):
                 return "buy"
             return "hold"
 
         if combined <= sell_th:
             ok_v2 = (ema_diff_rel <= 0.0 and igd_n5_n20 <= 0.0 and cbd_n20 >= 0.0)
-            if (pio < 0 and egm < 0) or ok_v2:
+            if (pio < 0 and egm < 0 and mom < -0.05) or (ok_v2 and mom < -0.05):
                 return "sell"
             return "hold"
 
@@ -2630,7 +2631,7 @@ class NertzMetalEngine:
                         if triggered:
                             close_action = "Sell" if action == "buy" else "Buy"
                             logger.info(f"?? Disparo Virtual TPSL [{reason.upper()}]: {sym} {close_action} (Ultimo precio: {last_price})")
-                            exec_res = await self._execute_trade(
+                            exec_res = await self._place_order(
                                 symbol=sym,
                                 action=close_action,
                                 quantity=float(trade.quantity),
