@@ -2418,6 +2418,7 @@ class NertzMetalEngine:
                 "db_updated": 0,
                 "skipped": 0,
                 "errors": 0,
+                "executed_virtual": 0,
             }
 
             pending_trades = (
@@ -2454,20 +2455,6 @@ class NertzMetalEngine:
                 min_tp_move = float (tick_size) * float (max (1, min_tp_ticks))
                 min_sl_move = float (tick_size) * float (max (1, min_sl_ticks))
 
-                open_map: Dict[str, Dict[str, Any]] = {}
-                try:
-                    payload = await client.get_open_orders_merged (category="spot", symbol=sym, limit=200)
-                    if payload.get ("retCode") == 0:
-                        rows = list (((payload.get ("result", {}) or {}).get ("list", []) or []))
-                        for row in rows:
-                            if not isinstance (row, dict):
-                                continue
-                            oid = row.get ("orderId")
-                            if isinstance (oid, str) and oid:
-                                open_map[oid] = row
-                except Exception:
-                    open_map = {}
-
                 metrics = self._last_metrics_by_symbol.get (sym) or {}
                 vol = float (metrics.get ("volatility", 0.0) or 0.0)
                 if not bool (np.isfinite (vol)):
@@ -2481,35 +2468,7 @@ class NertzMetalEngine:
                         results["skipped"] += 1
                         continue
 
-                    order = open_map.get (order_id)
-                    if not isinstance (order, dict):
-                        results["skipped"] += 1
-                        continue
-
-                    status = str (order.get ("orderStatus") or "").strip ().lower ()
-                    status_norm = status.replace ("_", "").replace (" ", "")
-                    if status_norm not in {"new", "partiallyfilled"}:
-                        results["skipped"] += 1
-                        continue
-
-                    order_filter = str (order.get ("orderFilter") or "").strip ().lower ()
-                    is_conditional = bool (order_filter and order_filter != "order")
-                    if is_conditional:
-                        results["skipped"] += 1
-                        continue
-
-                    order_link_id_str = str (order.get ("orderLinkId") or "")
-                    trade_raw = getattr (trade, "bybit_raw", None)
-                    trade_link = ""
-                    if isinstance (trade_raw, dict):
-                        tl = trade_raw.get ("order_link_id") or trade_raw.get ("orderLinkId")
-                        if isinstance (tl, str):
-                            trade_link = tl
-                    is_bot_order = bool (
-                        order_link_id_str.startswith ("nertzh-") or str (trade_link).startswith ("nertzh-"))
-                    if not is_bot_order:
-                        results["skipped"] += 1
-                        continue
+                    trade_status = str(trade.outcome_status).strip().lower()
 
                     action = str (getattr (trade, "action", "") or "").strip ().lower ()
                     if action not in {"buy", "sell"}:
@@ -2521,10 +2480,8 @@ class NertzMetalEngine:
                         results["skipped"] += 1
                         continue
 
-                    tp_old = float (getattr (trade, "tp_price", 0.0) or 0.0) if getattr (trade, "tp_price",
-                                                                                         None) is not None else 0.0
-                    sl_old = float (getattr (trade, "sl_price", 0.0) or 0.0) if getattr (trade, "sl_price",
-                                                                                         None) is not None else 0.0
+                    tp_old = float (getattr (trade, "tp_price", 0.0) or 0.0) if getattr (trade, "tp_price", None) is not None else 0.0
+                    sl_old = float (getattr (trade, "sl_price", 0.0) or 0.0) if getattr (trade, "sl_price", None) is not None else 0.0
 
                     if action == "buy":
                         profit_pct = (last_price - entry) / max (entry, 1e-12)
@@ -2534,8 +2491,7 @@ class NertzMetalEngine:
                     ml_p = None
                     if ml_enabled:
                         try:
-                            ml_p = self.ml_predict_proba (symbol=sym, action=action,
-                                                          metrics=metrics if isinstance (metrics, dict) else {})
+                            ml_p = self.ml_predict_proba (symbol=sym, action=action, metrics=metrics if isinstance (metrics, dict) else {})
                         except Exception:
                             ml_p = None
 
@@ -2543,8 +2499,7 @@ class NertzMetalEngine:
                     if isinstance (ml_p, float) and bool (np.isfinite (ml_p)) and ml_p < 0.5:
                         gap_eff = max (float (gap_min), gap_eff * 0.85)
 
-                    breakeven = entry * (1.0 + (fee_rate * 2.0)) if action == "buy" else entry * (
-                            1.0 - (fee_rate * 2.0))
+                    breakeven = entry * (1.0 + (fee_rate * 2.0)) if action == "buy" else entry * (1.0 - (fee_rate * 2.0))
 
                     tp_new = tp_old
                     sl_new = sl_old
@@ -2609,45 +2564,16 @@ class NertzMetalEngine:
                     sl_move = abs (sl_new - sl_old) if sl_old > 0 else float ("inf")
                     should_update_tp = (tp_old <= 0) or (tp_move >= min_tp_move)
                     should_update_sl = (sl_old <= 0) or (sl_move >= min_sl_move)
-                    if not (should_update_tp or should_update_sl):
-                        results["skipped"] += 1
-                        continue
 
                     results["checked"] += 1
 
-                    amend_body: Dict[str, Any] = {
-                        "category": "spot",
-                        "symbol": sym,
-                        "orderId": order_id,
-                    }
-                    try:
-                        if should_update_tp:
-                            amend_body["takeProfit"] = self._format_decimal (self._d (float (tp_new)))
-                        if should_update_sl:
-                            amend_body["stopLoss"] = self._format_decimal (self._d (float (sl_new)))
-                    except Exception:
-                        results["errors"] += 1
-                        continue
-
-                    order_price = order.get ("price")
-                    order_type = str (order.get ("orderType") or "")
-                    if str (order_type).strip ().lower () == "limit" and order_price is not None and str (
-                            order_price).strip ():
-                        try:
-                            amend_body["price"] = self._format_decimal (self._d (float (order_price)))
-                        except Exception:
-                            pass
-
-                    try:
-                        amend_res = await client.amend_order (amend_body)
-                    except Exception as e:
-                        amend_res = {"retCode": -1, "retMsg": str (e)}
-
-                    if amend_res.get ("retCode") == 0:
+                    # 1. Update SQLite Virtual TP/SL (Sin usar ByBit amend)
+                    if should_update_tp or should_update_sl:
                         if should_update_tp:
                             trade.tp_price = float (tp_new)
                         if should_update_sl:
                             trade.sl_price = float (sl_new)
+                        
                         current_raw = getattr (trade, "bybit_raw", None)
                         merged = dict (current_raw) if isinstance (current_raw, dict) else {}
                         merged["auto_tpsl"] = {
@@ -2666,10 +2592,8 @@ class NertzMetalEngine:
                             "tp_new": float (tp_new),
                             "sl_new": float (sl_new),
                             "ml_p": float (ml_p) if isinstance (ml_p, float) and bool (np.isfinite (ml_p)) else None,
-                            "amend": amend_res,
                         }
                         trade.bybit_raw = merged
-                        results["amended"] += 1
                         results["db_updated"] += 1
                         changed_any = True
                         actions.append (
@@ -2680,12 +2604,47 @@ class NertzMetalEngine:
                                 "order_id": order_id,
                                 "tp": float (tp_new),
                                 "sl": float (sl_new),
-                                "ml_p": float (ml_p) if isinstance (ml_p, float) and bool (
-                                    np.isfinite (ml_p)) else None,
+                                "ml_p": float (ml_p) if isinstance (ml_p, float) and bool (np.isfinite (ml_p)) else None,
                             }
                         )
-                    else:
-                        results["errors"] += 1
+
+                    # 2. Ejecucion de TPSL Virtual Activa
+                    if trade_status == "filled":
+                        triggered = False
+                        reason = ""
+                        if action == "buy":
+                            if tp_new > 0 and last_price >= tp_new:
+                                triggered = True
+                                reason = "tp"
+                            elif sl_new > 0 and last_price <= sl_new:
+                                triggered = True
+                                reason = "sl"
+                        elif action == "sell":
+                            if tp_new > 0 and last_price <= tp_new:
+                                triggered = True
+                                reason = "tp"
+                            elif sl_new > 0 and last_price >= sl_new:
+                                triggered = True
+                                reason = "sl"
+                        
+                        if triggered:
+                            close_action = "Sell" if action == "buy" else "Buy"
+                            logger.info(f"?? Disparo Virtual TPSL [{reason.upper()}]: {sym} {close_action} (Ultimo precio: {last_price})")
+                            exec_res = await self._execute_trade(
+                                symbol=sym,
+                                action=close_action,
+                                quantity=float(trade.quantity),
+                                price=float(last_price),
+                                tp=0.0,
+                                sl=0.0
+                            )
+                            if exec_res.get("success"):
+                                trade.outcome_status = "closed"
+                                trade.outcome_timestamp = datetime.now(timezone.utc)
+                                trade.exit_price = float(last_price)
+                                trade.profit_loss = float(profit_pct)
+                                results["executed_virtual"] += 1
+                                changed_any = True
 
             if changed_any:
                 try:
@@ -3539,10 +3498,6 @@ class NertzMetalEngine:
                 if order_type == "Limit":
                     price_str = self._format_decimal (self._quantize_to_step (price, tick_size, ROUND_HALF_UP))
                     body_params["price"] = price_str
-                    body_params["takeProfit"] = tp_str
-                    body_params["stopLoss"] = sl_str
-                    body_params["tpOrderType"] = "Market"
-                    body_params["slOrderType"] = "Market"
                 if order_type == "Market":
                     body_params["marketUnit"] = "baseCoin"
                 result = await client.create_order (body_params)
