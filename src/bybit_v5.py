@@ -213,6 +213,9 @@ class BybitV5Client:
         order_id: Optional[str] = None,
         order_link_id: Optional[str] = None,
         limit: Optional[int] = None,
+        start_time_ms: Optional[int] = None,
+        end_time_ms: Optional[int] = None,
+        cursor: Optional[str] = None,
     ) -> Dict[str, Any]:
         qs_parts = [f"category={category}"]
         if symbol:
@@ -223,6 +226,12 @@ class BybitV5Client:
             qs_parts.append(f"orderLinkId={order_link_id}")
         if isinstance(limit, int) and limit > 0:
             qs_parts.append(f"limit={limit}")
+        if start_time_ms is not None:
+            qs_parts.append(f"startTime={int(start_time_ms)}")
+        if end_time_ms is not None:
+            qs_parts.append(f"endTime={int(end_time_ms)}")
+        if cursor:
+            qs_parts.append(f"cursor={quote(str(cursor), safe='')}")
         status, data = await self.get("/v5/order/history", "&".join(qs_parts))
         return {"http_status": status, **(data or {})}
 
