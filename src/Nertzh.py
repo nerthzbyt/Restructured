@@ -95,6 +95,22 @@ def _resolve_storage_path (raw_path: str | None = None) -> str:
     return os.path.abspath (path)
 
 
+def _duckdb_lock_hint (exc: BaseException) -> str:
+    """Build an actionable hint when DuckDB cannot open due to a file lock."""
+    msg = str (exc)
+    pid_match = re.search (r"\(PID\s+(\d+)\)", msg, re.IGNORECASE)
+    release_script = os.path.join (_PROJECT_ROOT, "scripts", "release_duckdb_lock.ps1")
+    parts = [
+        "Otra instancia de Python tiene abierto nertz.duckdb.",
+        "Detén el bot anterior (Ctrl+C en su terminal) o ejecuta:",
+        f"  powershell -ExecutionPolicy Bypass -File \"{release_script}\"",
+    ]
+    if pid_match:
+        pid = pid_match.group (1)
+        parts.insert (1, f"Proceso bloqueante: PID {pid} → Stop-Process -Id {pid} -Force")
+    return " ".join (parts)
+
+
 engine = create_engine (f"sqlite:///{DATABASE_URL}", connect_args={"check_same_thread": False})
 Base = declarative_base ()
 
@@ -479,6 +495,7 @@ class NertzMetalEngine:
         self._last_tune_ts = 0.0
         self._last_metrics_json_ts: Dict[str, float] = {symbol: 0.0 for symbol in self.symbols}
         self._last_metrics_snapshot_ts: Dict[str, float] = {symbol: 0.0 for symbol in self.symbols}
+        self._last_live_metrics_ts: Dict[str, float] = {symbol: 0.0 for symbol in self.symbols}
         self._last_balance_sync_ts = 0.0
         self._balance_dirty = False
         self._boot_full_reset_done = False
@@ -1149,6 +1166,12 @@ class NertzMetalEngine:
                         if not db.query (MarketData).filter_by (timestamp=candle.timestamp, symbol=symbol).first ():
                             db.add (candle)
                     db.commit ()
+                candles.sort (key=lambda c: c.timestamp, reverse=True)
+                self.candles[symbol] = list (candles[:50])
+                if candles:
+                    self._last_kline_ts[symbol] = float (
+                        int (candles[0].timestamp.timestamp () * 1000)
+                    )
                 logger.info (f"📈 Velas iniciales para {symbol}: {len (candles)}")
             else:
                 logger.error (f"❌ Kline inesperado para {symbol}: {kline_response}")
@@ -1374,6 +1397,8 @@ class NertzMetalEngine:
 
             last_ts = float (self._last_kline_ts.get (symbol, 0.0) or 0.0)
             incoming_ts = float (timestamp_value)
+            confirm_raw = kline.get ("confirm")
+            is_confirmed = confirm_raw in (True, "true", 1, "1")
             cache_candle = MarketData (
                 timestamp=timestamp, symbol=symbol, open=open_price, high=high_price,
                 low=low_price, close=close_price, volume=volume
@@ -1381,26 +1406,30 @@ class NertzMetalEngine:
             buf = self.candles.setdefault (symbol, [])
             if buf and getattr (buf[0], "timestamp", None) == timestamp:
                 buf[0] = cache_candle
-                if incoming_ts <= last_ts:
-                    return
-            elif incoming_ts <= last_ts:
-                return
-            else:
+            elif incoming_ts > last_ts:
                 buf.insert (0, cache_candle)
                 if len (buf) > 50:
                     del buf[50:]
+                self._last_kline_ts[symbol] = incoming_ts
             logger.debug (f"📈 Acumulados {len (buf)} velas para {symbol}")
 
-            self._last_kline_ts[symbol] = incoming_ts
-            if not db.query (MarketData).filter_by (timestamp=timestamp, symbol=symbol).first ():
+            db_candle = db.query (MarketData).filter_by (timestamp=timestamp, symbol=symbol).first ()
+            if db_candle:
+                db_candle.open = open_price
+                db_candle.high = high_price
+                db_candle.low = low_price
+                db_candle.close = close_price
+                db_candle.volume = volume
+            else:
                 db_candle = MarketData (
                     timestamp=timestamp, symbol=symbol, open=open_price, high=high_price,
                     low=low_price, close=close_price, volume=volume
                 )
                 db.add (db_candle)
-                db.commit ()
-                logger.debug (f"⚡ Kline para {symbol}: Close={db_candle.close}, Volume={db_candle.volume}")
+            db.commit ()
+            logger.debug (f"⚡ Kline para {symbol}: Close={db_candle.close}, Volume={db_candle.volume}")
 
+            if is_confirmed:
                 await self._execute_trade (symbol, db)
 
         except Exception as e:
@@ -1457,7 +1486,8 @@ class NertzMetalEngine:
                     logger.info (
                         f"🤘 Orderbook guardado para {symbol}: Bids={len (self.orderbook_data[symbol]['bids'])}, Asks={len (self.orderbook_data[symbol]['asks'])}")
                     self.last_orderbook_log = time.time ()
-                return
+                if not bool (getattr (config, "STORAGE_SQLITE_MIRROR", True)):
+                    return
             orderbook = Orderbook (
                 timestamp=datetime.now (timezone.utc), symbol=symbol,
                 bids=self.orderbook_data[symbol]["bids"],
@@ -1579,7 +1609,8 @@ class NertzMetalEngine:
                 self._last_ticker_store_ts[symbol] = now_ts
                 logger.debug (
                     f"⚡ Ticker actualizado para {symbol}: Last={self.ticker_data[symbol]['last_price']}, USDIndex={self.ticker_data[symbol]['usd_index_price']}")
-                return
+                if not bool (getattr (config, "STORAGE_SQLITE_MIRROR", True)):
+                    return
 
             market_ticker = MarketTicker (
                 timestamp=datetime.now (timezone.utc),
@@ -1607,11 +1638,16 @@ class NertzMetalEngine:
         igd_n5_n20 = float (metrics.get ("igd_n5_n20", 0.0) or 0.0)
         cbd_n20 = float (metrics.get ("cbd_n20", 0.0) or 0.0)
         mom = float (metrics.get ("mom", 0.0) or 0.0)
+        tfi = float (metrics.get ("tfi") or metrics.get ("recent_trades_imbalance_qty_pct") or 0.0)
         buy_th = float (getattr (config, "COMBINED_BUY_THRESHOLD", 8.0) or 8.0)
         sell_th = float (getattr (config, "COMBINED_SELL_THRESHOLD", -8.0) or -8.0)
         hold_band = float (getattr (config, "COMBINED_HOLD_BAND", 2.0) or 2.0)
+        base = (abs (buy_th) + abs (sell_th)) / 2.0
+        buy_th, sell_th = base, -base
 
         volatility = float (metrics.get ("volatility", 0.0) or 0.0)
+        if volatility > 0 and volatility < 0.0004 and abs (tfi) < 0.3:
+            return "hold"
         if volatility > 0:
             base_vol = 0.002
             if volatility < base_vol:
@@ -1630,13 +1666,13 @@ class NertzMetalEngine:
         if combined >= buy_th:
             ok_v2 = (ema_diff_rel >= 0.0 and igd_n5_n20 >= 0.0 and cbd_n20 >= 0.0)
             if (pio > 0 and egm > 0 and mom > 0.05) or (ok_v2 and mom > 0.05):
-                return "buy"
+                return "hold" if tfi < -0.5 else "buy"
             return "hold"
 
         if combined <= sell_th:
             ok_v2 = (ema_diff_rel <= 0.0 and igd_n5_n20 <= 0.0 and cbd_n20 >= 0.0)
             if (pio < 0 and egm < 0 and mom < -0.05) or (ok_v2 and mom < -0.05):
-                return "sell"
+                return "hold" if tfi > 0.5 else "sell"
             return "hold"
 
         return "hold"
@@ -1876,6 +1912,18 @@ class NertzMetalEngine:
             "combined_hold_band": float (getattr (config, "COMBINED_HOLD_BAND", 2.0)),
         }
 
+    async def _live_metrics_tick (self, db: Session) -> None:
+        refresh_s = float (getattr (config, "METRICS_LIVE_REFRESH_S", 5.0) or 5.0)
+        now_ts = time.time ()
+        for symbol in self.symbols:
+            if now_ts - float (self._last_live_metrics_ts.get (symbol, 0.0)) < max (1.0, refresh_s):
+                continue
+            self._last_live_metrics_ts[symbol] = now_ts
+            try:
+                await self._core_cycle (symbol, db, collect_only=True)
+            except Exception as e:
+                logger.debug (f"live_metrics_tick skip {symbol}: {e}")
+
     async def _metrics_snapshot_tick (self, db: Session) -> None:
         interval_s = float (getattr (config, "METRICS_SNAPSHOT_INTERVAL_S", 55.0) or 55.0)
         now_ts = time.time ()
@@ -1883,6 +1931,12 @@ class NertzMetalEngine:
             if now_ts - float (self._last_metrics_snapshot_ts.get (symbol, 0.0)) < interval_s:
                 continue
             metrics = dict (self._last_metrics_by_symbol.get (symbol) or {})
+            if not bool (metrics.get ("data_ok", False)):
+                try:
+                    await self._core_cycle (symbol, db, collect_only=True)
+                except Exception as e:
+                    logger.debug (f"metrics_snapshot refresh skip {symbol}: {e}")
+                metrics = dict (self._last_metrics_by_symbol.get (symbol) or {})
             if not bool (metrics.get ("data_ok", False)):
                 continue
             ticker = self.ticker_data.get (symbol, {}) or {}
@@ -2023,6 +2077,9 @@ class NertzMetalEngine:
             targets["combined_buy_threshold"] = max (1.0, min (15.0, buy_comb_target * 0.9))
         if sell_comb_target is not None:
             targets["combined_sell_threshold"] = min (-1.0, max (-15.0, sell_comb_target * 0.9))
+        if "combined_buy_threshold" in targets and "combined_sell_threshold" in targets:
+            sym = (targets["combined_buy_threshold"] - targets["combined_sell_threshold"]) / 2.0
+            targets["combined_buy_threshold"], targets["combined_sell_threshold"] = sym, -sym
 
         return targets
 
@@ -2490,7 +2547,13 @@ class NertzMetalEngine:
 
                 # Veto 1: Spread Expandido (Market Makers retirando liquidez por riesgo de noticia)
                 # Veto 2: RV|OL Anómalo (Pico de volumen institucional, posible trampa o liquidación en cascada)
-                if spread_bps > (spread_avg_bps * 1.5) or rvol > 5.0:
+                last_age = metrics.get("recent_trades_last_trade_age_s")
+                if (
+                    spread_bps > (spread_avg_bps * 1.5)
+                    or rvol > 5.0
+                    or rvol < 5e-6
+                    or (last_age is not None and float(last_age) > 2.0)
+                ):
                     logger.debug(
                         f"🛑 [VETO TOXICIDAD] {symbol} | Spread: {spread_bps:.2f}bps | RVOL: {rvol:.2f}. "
                         f"Esperando reconstrucción del Orderbook."
@@ -3176,6 +3239,7 @@ class NertzMetalEngine:
                         await self._auto_hft_tick (db)
                     if bool (getattr (config, "AUTO_TPSL_ENABLED", False)):
                         await self._auto_tpsl_tick (db)
+                    await self._live_metrics_tick (db)
                     await self._metrics_snapshot_tick (db)
             except Exception as e:
                 logger.error (f"❌ Error en support loop: {e}")
@@ -4252,6 +4316,9 @@ class NertzMetalEngine:
             )
         except Exception as e:
             logger.error (f"❌ Storage DuckDB no pudo iniciar, fallback SQLite legacy: {e}")
+            err = str (e)
+            if "being utilized by another process" in err or "already open" in err.lower ():
+                logger.error (f"🔒 {_duckdb_lock_hint (e)}")
             self._storage = None
 
     async def stop_storage (self) -> None:
@@ -4686,6 +4753,22 @@ async def admin_agent_relax_thresholds (
             "timestamp": datetime.now (timezone.utc).isoformat ()}
 
 
+def _resolve_candles (symbol: str, db: Session, *, limit: int = 50, prefer_memory: bool = True):
+    """Velas del loop en memoria (verdad del motor) con fallback a DB."""
+    lim = max (1, min (200, int (limit)))
+    if prefer_memory:
+        buf = bot.candles.get (symbol)
+        if isinstance (buf, list) and buf:
+            return list (buf[:lim])
+    return (
+        db.query (MarketData)
+        .filter (MarketData.symbol == symbol)
+        .order_by (MarketData.timestamp.desc ())
+        .limit (lim)
+        .all ()
+    )
+
+
 @app.get ("/market_data/{symbol}")
 async def get_market_data (symbol: str, db: Session = Depends (get_db)):
     buf = bot.candles.get (symbol)
@@ -4732,8 +4815,7 @@ async def get_ticker (symbol: str, db: Session = Depends (get_db)):
 
 @app.get ("/metrics/{symbol}")
 async def get_metrics (symbol: str, db: Session = Depends (get_db)):
-    candles = db.query (MarketData).filter (MarketData.symbol == symbol).order_by (MarketData.timestamp.desc ()).limit (
-        5).all ()
+    candles = _resolve_candles (symbol, db, limit=50)
     candle_data = [{"open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume} for c in
                    candles]
     orderbook = bot.orderbook_data.get (symbol, {"bids": [], "asks": []})
@@ -4790,13 +4872,7 @@ async def get_metrics (symbol: str, db: Session = Depends (get_db)):
 
 @app.get ("/combined/{symbol}")
 async def get_combined (symbol: str, db: Session = Depends (get_db)):
-    candles = (
-        db.query (MarketData)
-        .filter (MarketData.symbol == symbol)
-        .order_by (MarketData.timestamp.desc ())
-        .limit (5)
-        .all ()
-    )
+    candles = _resolve_candles (symbol, db, limit=50)
     live_ob = bot.orderbook_data.get (symbol, {"bids": [], "asks": []})
     live_ticker = bot.ticker_data.get (symbol, {})
     orderbook_row = (
@@ -4862,13 +4938,13 @@ async def get_ild (symbol: str, db: Session = Depends (get_db)):
     orderbook = bot.orderbook_data.get (symbol, {"bids": [], "asks": []})
     ticker = bot.ticker_data.get (symbol, {"last_price": 0.0})
     recent = list (bot.recent_trades.get (symbol) or [])
-    calculate_discovery_metrics(candle_data, orderbook, ticker, recent)
+    metrics = calculate_discovery_metrics (candle_data, orderbook, ticker, recent)
     return {
         "symbol": symbol,
         "timestamp": datetime.now (timezone.utc).isoformat (),
         "ild": float ((await get_metrics (symbol, db))["metrics"].get ("ild") or 0.0),
         "ild_raw": float ((await get_metrics (symbol, db))["metrics"].get ("ild_raw") or 0.0),
-        "components": (await get_metrics (symbol, db))["metrics"],
+        "components": metrics.get ("combined") or {},
     }
 
 
@@ -4892,7 +4968,7 @@ async def get_rol (symbol: str, db: Session = Depends (get_db)):
         "timestamp": datetime.now (timezone.utc).isoformat (),
         "rol": float ((await get_metrics (symbol, db))["metrics"].get ("rol") or 0.0),
         "rol_raw": float ((await get_metrics (symbol, db))["metrics"].get ("rol_raw") or 0.0),
-        "components": (await get_metrics (symbol, db))["metrics"],
+        "components": metrics.get ("combined") or {},
     }
 
 
@@ -5058,8 +5134,7 @@ async def get_orderbook (symbol: str, db: Session = Depends (get_db)):
 
 @app.get ("/candles/{symbol}/{limit}")
 async def get_candles (symbol: str, limit: int = 5, db: Session = Depends (get_db)):
-    candles = db.query (MarketData).filter (MarketData.symbol == symbol).order_by (MarketData.timestamp.desc ()).limit (
-        limit).all ()
+    candles = _resolve_candles (symbol, db, limit=int (limit))
     return {
         "symbol": symbol,
         "candles": [
@@ -5753,16 +5828,102 @@ async def storage_status ():
             getattr (config, "TICKER_PERSIST_INTERVAL_MS", 200.0) or 200.0
         ),
         "jsonl_disabled": bool (getattr (config, "STORAGE_DISABLE_JSONL", False)),
+        "sqlite_mirror": bool (getattr (config, "STORAGE_SQLITE_MIRROR", True)),
         "timestamp": datetime.now (timezone.utc).isoformat (),
     }
+
+
+@app.get ("/storage/recent/{symbol}")
+async def storage_recent (symbol: str, limit: int = 10, db: Session = Depends (get_db)):
+    sym = str (symbol or "").strip ().upper ()
+    lim = max (1, min (100, int (limit)))
+    storage = getattr (bot, "_storage", None)
+    payload: Dict[str, Any] = {
+        "symbol": sym,
+        "limit": lim,
+        "duckdb_active": storage is not None,
+        "sqlite_mirror": bool (getattr (config, "STORAGE_SQLITE_MIRROR", True)),
+    }
+    if storage is not None and hasattr (storage, "fetch_recent"):
+        try:
+            duck = await storage.fetch_recent (sym, limit=lim)
+            payload["duckdb"] = duck
+        except Exception as e:
+            payload["duckdb_error"] = str (e)
+    try:
+        ob_rows = (
+            db.query (Orderbook)
+            .filter (Orderbook.symbol == sym)
+            .order_by (Orderbook.timestamp.desc ())
+            .limit (lim)
+            .all ()
+        )
+        tick_rows = (
+            db.query (MarketTicker)
+            .filter (MarketTicker.symbol == sym)
+            .order_by (MarketTicker.timestamp.desc ())
+            .limit (lim)
+            .all ()
+        )
+        met_rows = (
+            db.query (MetricSnapshot)
+            .filter (MetricSnapshot.symbol == sym)
+            .order_by (MetricSnapshot.timestamp.desc ())
+            .limit (lim)
+            .all ()
+        )
+        payload["sqlite"] = {
+            "orderbook_count": db.query (Orderbook).filter (Orderbook.symbol == sym).count (),
+            "ticker_count": db.query (MarketTicker).filter (MarketTicker.symbol == sym).count (),
+            "metric_count": db.query (MetricSnapshot).filter (MetricSnapshot.symbol == sym).count (),
+            "orderbook": [
+                {
+                    "timestamp": r.timestamp.isoformat (),
+                    "bid_levels": len (r.bids or []),
+                    "ask_levels": len (r.asks or []),
+                    "best_bid": float ((r.bids or [[0]])[0][0]) if r.bids else None,
+                    "best_ask": float ((r.asks or [[0]])[0][0]) if r.asks else None,
+                }
+                for r in ob_rows
+            ],
+            "ticks": [
+                {
+                    "timestamp": r.timestamp.isoformat (),
+                    "last_price": float (r.last_price),
+                    "volume_24h": float (r.volume_24h),
+                }
+                for r in tick_rows
+            ],
+            "metrics": [
+                {
+                    "timestamp": r.timestamp.isoformat (),
+                    "decision": r.decision,
+                    "combined": float (r.combined),
+                    "last_price": float (r.last_price),
+                }
+                for r in met_rows
+            ],
+        }
+    except Exception as e:
+        payload["sqlite_error"] = str (e)
+    payload["live_memory"] = {
+        "orderbook_levels": {
+            "bids": len ((bot.orderbook_data.get (sym) or {}).get ("bids") or []),
+            "asks": len ((bot.orderbook_data.get (sym) or {}).get ("asks") or []),
+        },
+        "last_price": float ((bot.ticker_data.get (sym) or {}).get ("last_price") or 0.0),
+        "candles_in_memory": len (bot.candles.get (sym) or []),
+        "trade_cycle": "kline_1m_close_only",
+    }
+    payload["timestamp"] = datetime.now (timezone.utc).isoformat ()
+    return payload
 
 
 @app.get ("/decisions/{symbol}")
 async def get_decisions_audit (symbol: str, db: Session = Depends (get_db)):
     metrics = dict (bot._last_metrics_by_symbol.get (symbol) or {})
     if not metrics:
-        candles = db.query (MarketData).filter (MarketData.symbol == symbol).order_by (
-            MarketData.timestamp.desc ()).limit (5).all ()
+        candles = _resolve_candles (symbol, db, limit=50)
         candle_data = [{"open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume} for c in candles]
         orderbook = bot.orderbook_data.get (symbol, {"bids": [], "asks": []})
         ticker = bot.ticker_data.get (symbol, {"last_price": 0.0})

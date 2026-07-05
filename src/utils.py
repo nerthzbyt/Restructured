@@ -19,6 +19,89 @@ import numpy as np
 logger = logging.getLogger("NertzMetalEngine")
 _RESULTS_JSON_LOCK = threading.Lock()
 _JSONL_LOCK = threading.Lock()
+_WELFORD_STATES: Dict[str, Dict[str, float]] = {}
+
+class WelfordState:
+    @staticmethod
+    def get_z(key: str, current: float) -> float:
+        if key not in _WELFORD_STATES:
+            _WELFORD_STATES[key] = {"count": 0, "mean": 0.0, "M2": 0.0}
+        
+        state = _WELFORD_STATES[key]
+        state["count"] += 1
+        delta = current - state["mean"]
+        state["mean"] += delta / state["count"]
+        delta2 = current - state["mean"]
+        state["M2"] += delta * delta2
+        
+        if state["count"] < 2:
+            return 0.0
+            
+        var = state["M2"] / state["count"]
+        sd = math.sqrt(var)
+        
+        if sd <= 1e-12:
+            return 0.0
+            
+        z = (current - state["mean"]) / sd
+        if state["count"] < 5:
+            z *= (state["count"] / 5.0)
+            
+        return z
+
+    @staticmethod
+    def z_from_window(
+        window_values: List[float],
+        current: float,
+        *,
+        min_count: int = 5,
+    ) -> float:
+        values: List[float] = []
+        for v in window_values or []:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(fv):
+                values.append(fv)
+        try:
+            cur = float(current)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(cur):
+            return 0.0
+
+        count = len(values)
+        if count < 2:
+            return 0.0
+
+        mean = sum(values) / float(count)
+        m2 = sum((v - mean) ** 2 for v in values)
+        var = m2 / float(count)
+        sd = math.sqrt(var)
+        if sd <= 1e-12:
+            return 0.0
+
+        z = (cur - mean) / sd
+        min_c = int(min_count) if int(min_count) > 0 else 5
+        if count < min_c:
+            z *= float(count) / float(min_c)
+        return float(z)
+
+    @staticmethod
+    def history_values(history: list, key: str) -> List[float]:
+        out: List[float] = []
+        for h in history or []:
+            if not isinstance(h, dict):
+                continue
+            v = h.get(key)
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(fv):
+                out.append(fv)
+        return out
 
 
 # === TSM Formula Parser ===
@@ -576,6 +659,76 @@ def append_metrics_snapshot(record: Dict[str, Any], data_dir: str) -> str:
 
 async def append_metrics_snapshot_async(record: Dict[str, Any], data_dir: str) -> str:
     return await asyncio.to_thread(append_metrics_snapshot, record, data_dir)
+
+
+def load_metrics_raw_history_from_jsonl(
+    data_dir: str,
+    symbol: str,
+    *,
+    window_s: float = 900.0,
+    max_lines: int = 2000,
+) -> List[Dict]:
+    path = os.path.join(os.path.abspath(str(data_dir)), "metrics_snapshots.jsonl")
+    if not os.path.isfile(path):
+        return []
+
+    now_ts = time.time()
+    cutoff = now_ts - float(window_s)
+    symbol_s = str(symbol).strip()
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+    except Exception:
+        return []
+
+    tail = all_lines[-int(max_lines):] if len(all_lines) > int(max_lines) else all_lines
+    out: List[Dict] = []
+    for line in tail:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("symbol", "")).strip() != symbol_s:
+            continue
+        ts_raw = row.get("ts")
+        if ts_raw is None:
+            continue
+        try:
+            ts_f = float(ts_raw)
+        except (TypeError, ValueError):
+            continue
+        if ts_f < cutoff:
+            continue
+
+        metrics = row.get("metrics") or {}
+        if not isinstance(metrics, dict):
+            continue
+
+        try:
+            out.append(
+                {
+                    "ts": float(ts_f),
+                    "pio": float(metrics.get("pio_raw", 0.0) or 0.0),
+                    "ild": float(metrics.get("ild_raw", 0.0) or 0.0),
+                    "egm": float(metrics.get("egm_raw", 0.0) or 0.0),
+                    "rol": float(metrics.get("rol_raw", 0.0) or 0.0),
+                    "ogm": float(metrics.get("ogm_raw", 0.0) or 0.0),
+                    "mom_raw": float(metrics.get("mom_raw", 0.0) or 0.0),
+                    "asymmetry": float(metrics.get("asymmetry", 0.0) or 0.0),
+                    "spread_pct": float(metrics.get("spread_pct", 0.0) or 0.0),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+
+    out.sort(key=lambda x: float(x.get("ts", 0.0) or 0.0))
+    return out
 
 
 # === Metrics Calculation ===
@@ -1309,34 +1462,11 @@ def calculate_metrics(
             history = []
 
         def _z(current: float, key: str) -> float:
-            xs: List[float] = []
-            for h in history:
-                if isinstance(h, dict):
-                    v = h.get(key)
-                    if v is not None:
-                        try:
-                            xs.append(float(v))
-                        except Exception:
-                            pass
-            xs.append(float(current))
-            
-            n = len(xs)
-            if n < 2:
-                return 0.0
-                
-            arr = np.array(xs, dtype=np.float64)
-            mu = float(np.mean(arr))
-            sd = float(np.std(arr))
-            
-            if sd <= 1e-12:
-                return 0.0
-                
-            z = (float(current) - mu) / sd
-            
-            if n < 5:
-                z *= (n / 5.0)
-                
-            return z
+            return WelfordState.z_from_window(
+                WelfordState.history_values(history, key),
+                current,
+                min_count=5,
+            )
 
         pio_z = _z(pio_raw, "pio")
         ild_z = _z(ild_raw, "ild")
@@ -1348,6 +1478,8 @@ def calculate_metrics(
             bonus = float(np.sign(pio_z)) * min(1.5, abs(rol_z) - 1.5)
         egm_raw = (pio_z * (1.0 + abs(asymmetry))) + bonus
         egm_z = _z(egm_raw, "egm")
+        trades_metrics = compute_recent_trades_metrics(recent_trades, window_n=10)
+        tfi_z = _z(float((trades_metrics or {}).get("imbalance_qty_pct") or 0.0), "tfi_raw")
 
         cw = (
             ticker_data.get("combined_weights")
@@ -1356,31 +1488,23 @@ def calculate_metrics(
         )
         if not isinstance(cw, dict):
             cw = {}
-        w_pio = float(cw.get("pio", 0.45) or 0.45)
+        w_pio = float(cw.get("pio", 0.25) or 0.25)
+        w_tfi = float(cw.get("tfi", 0.25) or 0.25)
         w_egm = float(cw.get("egm", 0.30) or 0.30)
         w_ild = float(cw.get("ild", -0.15) or -0.15)
         w_rol = float(cw.get("rol", 0.10) or 0.10)
         w_ogm = float(cw.get("ogm", 0.05) or 0.05)
         w_mom = float(cw.get("mom", 0.16) or 0.16)
         w_scale = float(cw.get("scale", 10.0) or 10.0)
-        weights = [w_pio, w_egm, w_ild, w_rol, w_ogm, w_mom, w_scale]
+        weights = [w_pio, w_egm, w_ild, w_rol, w_ogm, w_mom, w_tfi, w_scale]
         if not np.isfinite(weights).all():
-            w_pio, w_egm, w_ild, w_rol, w_ogm, w_mom, w_scale = (
-                0.36,
-                0.24,
-                -0.12,
-                0.08,
-                0.04,
-                0.16,
-                10.0,
+            w_pio, w_egm, w_ild, w_rol, w_ogm, w_mom, w_tfi, w_scale = (
+                0.25, 0.30, -0.15, 0.10, 0.05, 0.16, 0.25, 10.0,
             )
 
         combined_z_micro = (
-            w_pio * pio_z
-            + w_egm * egm_z
-            + w_ild * ild_z
-            + w_rol * rol_z
-            + w_ogm * ogm_z
+            w_pio * pio_z + w_egm * egm_z + w_ild * ild_z
+            + w_rol * rol_z + w_ogm * ogm_z + w_tfi * tfi_z
         )
 
         closes: List[float] = []
@@ -1536,10 +1660,6 @@ def calculate_metrics(
                 if vnum is not None:
                     ctx[f"Candle{i}{k_dst}"] = float(vnum)
 
-        trades_metrics = compute_recent_trades_metrics(
-            recent_trades,
-            window_n=10,
-        )
         if isinstance(trades_metrics, dict):
             for k, v in trades_metrics.items():
                 if v is None:
@@ -1605,6 +1725,11 @@ def calculate_metrics(
         formulas_dict = formulas if isinstance(formulas, dict) else {}
         derived = eval_tsm_formulas(formulas_dict, ctx)
 
+        valid_history_count = sum(
+            1 for h in history if isinstance(h, dict)
+        )
+        metrics_calibrated = valid_history_count >= 4
+
         logger.debug(
             "Métricas: combined=%.2f, ild=%.4f, egm=%.4f, rol=%.4f, "
             "pio=%.4f, ogm=%.4f, volatility=%.4f",
@@ -1618,6 +1743,7 @@ def calculate_metrics(
         )
         return {
             "data_ok": True,
+            "metrics_calibrated": bool(metrics_calibrated),
             "last_price": float(last_price),
             "combined": float(combined),
             "ild": float(ild_z),
@@ -1634,6 +1760,7 @@ def calculate_metrics(
                 "rol": float(w_rol),
                 "ogm": float(w_ogm),
                 "mom": float(w_mom),
+                "tfi": float(w_tfi),
                 "scale": float(w_scale),
             },
             "combined_components": {
@@ -1643,6 +1770,7 @@ def calculate_metrics(
                 "rol": float(w_rol) * float(rol_z),
                 "ogm": float(w_ogm) * float(ogm_z),
                 "mom": float(w_mom) * float(mom_z),
+                "tfi": float(w_tfi) * float(tfi_z),
                 "sum_z": float(combined_z),
             },
             "volatility": float(volatility),
@@ -1965,21 +2093,35 @@ def save_results(results: dict, log_dir: str = "logs") -> None:
                 with open(filepath, "r", encoding="utf-8") as f:
                     existing = json.load(f)
                 if isinstance(existing, dict):
-                    keys = (
+                    preserve_keys = (
                         "events",
                         "last_metrics",
                         "thresholds",
                         "last_balance",
-                        "metadata",
-                        "summary",
+                        "last_trade",
+                        "trades",
+                        "by_symbol",
                     )
-                    for key in keys:
-                        if key in existing and key not in results:
+                    for key in preserve_keys:
+                        if key not in existing:
+                            continue
+                        if key not in results or (
+                            key == "events"
+                            and not isinstance(results.get("events"), list)
+                        ) or (
+                            key == "events"
+                            and isinstance(results.get("events"), list)
+                            and len(results.get("events") or []) == 0
+                        ):
                             results[key] = existing[key]
             except Exception:
                 pass
-        with open(filepath, "w", encoding="utf-8") as f:
+        tmp_path = f"{filepath}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, filepath)
     logger.info(f"📈 Resultados guardados en {filepath}")
 
 

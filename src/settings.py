@@ -20,12 +20,16 @@ class ConfigSettings:
             # Load variables from environment
             self.BYBIT_API_KEY = self._get_env("BYBIT_API_KEY")
             self.BYBIT_API_SECRET = self._get_env("BYBIT_API_SECRET")
-            self.BYBIT_ENV = str(self._get_env("BYBIT_ENV", "") or "").strip().lower()
-            self.USE_TESTNET = self._get_env_bool("USE_TESTNET", default=True)
+            env_raw = str(self._get_env("BYBIT_ENV", "mainnet") or "").strip().lower()
+            if env_raw in {"", "mainnet"}:
+                self.BYBIT_ENV = "mainnet"
+            elif env_raw == "demo":
+                self.BYBIT_ENV = "demo"
+            else:
+                raise ValueError(
+                    f"BYBIT_ENV inválido: {env_raw!r}. Valores permitidos: demo, mainnet"
+                )
             self.LIVE_TRADING_ENABLED = self._get_env_bool("LIVE_TRADING_ENABLED", default=False)
-            self.ALLOW_TESTNET_LIVE = self._get_env_bool("ALLOW_TESTNET_LIVE", default=False)
-            if self.LIVE_TRADING_ENABLED and self.USE_TESTNET and not self.ALLOW_TESTNET_LIVE:
-                raise ValueError("LIVE_TRADING_ENABLED=True no puede usarse con USE_TESTNET=True")
 
             # Validated and defaulted attributes
             self.SYMBOL = self._get_env_symbols("SYMBOL", "BTCUSDT", self.__class__.VALID_SYMBOLS)
@@ -42,9 +46,24 @@ class ConfigSettings:
             self.DEFAULT_SLEEP_TIME = self._get_env_int("DEFAULT_SLEEP_TIME", default=10, positive=True)
             self.TRADE_COOLDOWN_S = self._get_env_clamped_float(
                 "TRADE_COOLDOWN_S",
-                default=1.0,
+                default=0.0,
                 min_value=0.0,
                 max_value=300.0,
+            )
+            self.COOLDOWN_BYPASS_STRONG_SIGNAL = self._get_env_bool(
+                "COOLDOWN_BYPASS_STRONG_SIGNAL", default=True
+            )
+            self.COOLDOWN_BYPASS_MULT = self._get_env_clamped_float(
+                "COOLDOWN_BYPASS_MULT",
+                default=1.25,
+                min_value=1.0,
+                max_value=5.0,
+            )
+            self.MAX_CONCURRENT_ORDERS = self._get_env_int(
+                "MAX_CONCURRENT_ORDERS", default=20, positive=True
+            )
+            self.ALLOW_MULTIPLE_ACTIVE_TRADES = self._get_env_bool(
+                "ALLOW_MULTIPLE_ACTIVE_TRADES", default=True
             )
             self.OUTCOME_HORIZON_S = self._get_env_clamped_float(
                 "OUTCOME_HORIZON_S",
@@ -57,6 +76,12 @@ class ConfigSettings:
                 default=1.0,
                 min_value=0.25,
                 max_value=30.0,
+            )
+            self.ORDERS_SYNC_INTERVAL_S = self._get_env_clamped_float(
+                "ORDERS_SYNC_INTERVAL_S",
+                default=5.0,
+                min_value=0.5,
+                max_value=300.0,
             )
             self.ORDERS_SYNC_UPDATE_AFTER_S = self._get_env_clamped_float(
                 "ORDERS_SYNC_UPDATE_AFTER_S",
@@ -91,8 +116,8 @@ class ConfigSettings:
             self.PIO_THRESHOLD = self._get_env_float("PIO_THRESHOLD", default=0.0)
             self.EGM_BUY_THRESHOLD = self._get_env_float("EGM_BUY_THRESHOLD", default=0.02)
             self.EGM_SELL_THRESHOLD = self._get_env_float("EGM_SELL_THRESHOLD", default=-0.02)
-            self.COMBINED_BUY_THRESHOLD = self._get_env_float("COMBINED_BUY_THRESHOLD", default=6.0)
-            self.COMBINED_SELL_THRESHOLD = self._get_env_float("COMBINED_SELL_THRESHOLD", default=-6.0)
+            self.COMBINED_BUY_THRESHOLD = self._get_env_float("COMBINED_BUY_THRESHOLD", default=4.5)
+            self.COMBINED_SELL_THRESHOLD = self._get_env_float("COMBINED_SELL_THRESHOLD", default=-4.5)
             self.COMBINED_HOLD_BAND = self._get_env_float("COMBINED_HOLD_BAND", default=3.0, positive=True)
             self.ORDERBOOK_LAMBDA = self._get_env_float("ORDERBOOK_LAMBDA", default=0.03, positive=True)
             self.ORDERBOOK_PCT_BAND = self._get_env_clamped_float("ORDERBOOK_PCT_BAND", default=0.015, min_value=0.0,
@@ -146,6 +171,42 @@ class ConfigSettings:
             self.TPSL_CANCEL_AFTER_S = self._get_env_clamped_float("TPSL_CANCEL_AFTER_S", default=90.0, min_value=5.0,
                                                                    max_value=3600.0)
             self.FULL_RESET_ON_BOOT = self._get_env_bool("FULL_RESET_ON_BOOT", default=False)
+
+            # Storage (DuckDB batch writer for HF time-series)
+            self.STORAGE_BACKEND = self._get_env_with_validation(
+                "STORAGE_BACKEND",
+                "duckdb",
+                ["duckdb", "duck", "sqlite_legacy", "sqlite", "legacy"],
+            )
+            self.STORAGE_PATH = str(
+                self._get_env("STORAGE_PATH", "") or ""
+            ).strip() or "data/nertz.duckdb"
+            self.STORAGE_BATCH_INTERVAL_MS = self._get_env_clamped_float(
+                "STORAGE_BATCH_INTERVAL_MS",
+                default=50.0,
+                min_value=10.0,
+                max_value=5000.0,
+            )
+            self.ORDERBOOK_PERSIST_INTERVAL_MS = self._get_env_clamped_float(
+                "ORDERBOOK_PERSIST_INTERVAL_MS",
+                default=200.0,
+                min_value=50.0,
+                max_value=10000.0,
+            )
+            self.TICKER_PERSIST_INTERVAL_MS = self._get_env_clamped_float(
+                "TICKER_PERSIST_INTERVAL_MS",
+                default=200.0,
+                min_value=50.0,
+                max_value=10000.0,
+            )
+            self.STORAGE_DISABLE_JSONL = self._get_env_bool(
+                "STORAGE_DISABLE_JSONL",
+                default=self.STORAGE_BACKEND in {"duckdb", "duck"},
+            )
+            self.STORAGE_SQLITE_MIRROR = self._get_env_bool(
+                "STORAGE_SQLITE_MIRROR",
+                default=True,
+            )
 
             # Price Chasing configuration
             self.MAX_CHASE_ATTEMPTS = self._get_env_int("MAX_CHASE_ATTEMPTS", default=3, positive=True)
@@ -233,5 +294,8 @@ class ConfigSettings:
         logger.info(f"  - SYMBOL: {self.SYMBOL}, TIMEFRAME: {self.TIMEFRAME}, ORDER_TYPE: {self.ORDER_TYPE}")
         api_key_status = "SET" if self.BYBIT_API_KEY else "NOT_SET"
         logger.info(
-            f"  - BYBIT_ENV: {self.BYBIT_ENV or 'default'}, USE_TESTNET: {self.USE_TESTNET}, LIVE_TRADING_ENABLED: {self.LIVE_TRADING_ENABLED}, BYBIT_API_KEY: {api_key_status}"
+            f"  - BYBIT_ENV: {self.BYBIT_ENV}, LIVE_TRADING_ENABLED: {self.LIVE_TRADING_ENABLED}, BYBIT_API_KEY: {api_key_status}"
+        )
+        logger.info(
+            f"  - STORAGE: {self.STORAGE_BACKEND} @ {self.STORAGE_PATH}, batch_ms={self.STORAGE_BATCH_INTERVAL_MS}"
         )

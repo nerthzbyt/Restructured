@@ -105,7 +105,7 @@ class CombinedWeights:
 
 
 DEFAULT_COMBINED_WEIGHTS = CombinedWeights(
-    pio=0.45, egm=0.30, ild=-0.15, rol=0.10, ogm=0.05, mom=0.16, scale=10.0
+    pio=0.25, egm=0.30, ild=-0.15, rol=0.10, ogm=0.05, mom=0.16, scale=10.0
 )
 
 
