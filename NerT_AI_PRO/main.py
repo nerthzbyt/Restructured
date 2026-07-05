@@ -27,6 +27,30 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 import Nertzh as nertzh  # noqa: E402
+from mcp_bridge import bybit_env_info, call_bybit_mcp, mcp_status  # noqa: E402
+from qwen_desktop import (  # noqa: E402
+    normalize_model as _qwen_normalize_model,
+    qwen_desktop_chat,
+    qwen_desktop_status,
+)
+from bot_state_bridge import bot_live_state_snapshot  # noqa: E402
+from react_agent import run_react_agent, tool_search_for_agent  # noqa: E402
+from data_analyzer import analyze_trading_data  # noqa: E402
+from src_bridge import (  # noqa: E402
+    grep_project,
+    json_file_info,
+    list_src_tree,
+    project_context_snapshot,
+    read_project_file,
+    src_module_outline,
+)
+from tool_registry import (  # noqa: E402
+    build_full_catalog,
+    build_prompt_catalog,
+    registry_stats,
+    resolve_nertzh_path,
+    search_tools,
+)
 from optimizer import (  # noqa: E402
     DEFAULT_COMBINED_WEIGHTS,
     CombinedWeights,
@@ -50,6 +74,7 @@ class AgentMemoryStore:
         with self._lock:
             con = self._connect()
             try:
+                # Crear tabla principal de eventos
                 con.execute(
                     """
                     CREATE TABLE IF NOT EXISTS agent_events (
@@ -60,6 +85,7 @@ class AgentMemoryStore:
                     )
                     """
                 )
+                # Crear índices para mejorar rendimiento de consultas
                 con.execute(
                     "CREATE INDEX IF NOT EXISTS idx_agent_events_ts ON agent_events(ts_ms)"
                 )
@@ -67,6 +93,9 @@ class AgentMemoryStore:
                     "CREATE INDEX IF NOT EXISTS idx_agent_events_kind ON agent_events(kind)"
                 )
                 con.commit()
+            except sqlite3.Error as e:
+                nertzh.logger.error(f"Error creando tabla de eventos: {e}")
+                raise
             finally:
                 con.close()
 
@@ -195,7 +224,14 @@ def _llm_config() -> LLMConfig:
     if model_env is not None and str(model_env).strip():
         model = str(model_env).strip()
     else:
-        model = "deepseek-r1:latest" if backend == "ollama" else "deepseek-r1"
+        # Modelos por defecto según el backend:
+        # - openai_compat (DashScope): qwen-plus-latest (Qwen 3.7 Plus)
+        # - ollama (local): qwen2.5-coder:latest (fallback local)
+        # Nota: Mantener Lingma como plugin IDE (no actualizar a Qoder CN)
+        if backend == "ollama":
+            model = "qwen2.5-coder:latest"
+        else:
+            model = "qwen-plus-latest"
     temperature = float(max(0.0, min(2.0, _env_float("LLM_TEMPERATURE", 0.1))))
     timeout_s = float(max(3.0, min(120.0, _env_float("LLM_TIMEOUT_S", 30.0))))
     api_key = os.getenv("LLM_API_KEY", None)
@@ -363,6 +399,12 @@ async def llm_chat(messages: list[Dict[str, str]], *, model: Optional[str] = Non
             res = await _ollama_chat(cfg=cfg, messages=messages)
         elif cfg.backend in {"openai", "openai_compat", "openai-compatible", "openai_compatible"}:
             res = await _openai_compat_chat(cfg=cfg, messages=messages)
+        elif cfg.backend in {"qwen_desktop", "qwen-desktop", "qwen_studio", "qwen-studio"}:
+            res = await qwen_desktop_chat(
+                messages=messages,
+                model=cfg.model,
+                timeout_s=cfg.timeout_s,
+            )
         else:
             return {
                 "ok": False,
@@ -553,70 +595,355 @@ def _chat_html() -> str:
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>NerT AI PRO</title>
+  <title>NerT AI PRO — Quant Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b1020;color:#e7eaf3}
-    .wrap{max-width:980px;margin:0 auto;padding:18px}
-    .card{background:#121a33;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
-    input,textarea,button{border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#0f1630;color:#e7eaf3;padding:10px}
-    textarea{width:100%;min-height:120px;resize:vertical}
-    button{cursor:pointer}
-    .log{white-space:pre-wrap;background:#0a0f24;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px;min-height:220px}
-    .muted{color:#aab3d6}
+    :root{
+      --bg:#060a14;--surface:#0d1424;--surface2:#111b30;--border:rgba(99,130,191,.18);
+      --text:#e8edf7;--muted:#8b9cc7;--accent:#3d8bfd;--accent2:#00d4aa;
+      --warn:#f5a623;--danger:#ff5c6a;--ok:#2dd4a0;--glow:rgba(61,139,253,.15);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+    .app{display:grid;grid-template-rows:auto 1fr;min-height:100vh}
+    header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;
+      background:linear-gradient(180deg,#0a1020,#060a14);border-bottom:1px solid var(--border)}
+    .brand{display:flex;align-items:center;gap:12px}
+    .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+      display:grid;place-items:center;font-weight:700;font-size:14px;color:#041018}
+    .brand h1{margin:0;font-size:17px;font-weight:700;letter-spacing:.02em}
+    .brand span{display:block;font-size:11px;color:var(--muted);font-weight:500}
+    .status-pills{display:flex;gap:8px;flex-wrap:wrap}
+    .pill{font-size:11px;padding:5px 10px;border-radius:999px;border:1px solid var(--border);
+      background:var(--surface);color:var(--muted)}
+    .pill.ok{color:var(--ok);border-color:rgba(45,212,160,.35)}
+    .pill.warn{color:var(--warn)}
+    main{display:grid;grid-template-columns:1fr 340px;gap:14px;padding:14px 18px 18px;min-height:0}
+    @media(max-width:960px){main{grid-template-columns:1fr}}
+    .panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+    .panel-h{padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;
+      letter-spacing:.06em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+    .chat-feed{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:12px;min-height:320px;max-height:calc(100vh - 320px)}
+    .bubble{max-width:92%;padding:12px 14px;border-radius:12px;line-height:1.55;font-size:14px;white-space:pre-wrap}
+    .bubble.user{align-self:flex-end;background:linear-gradient(135deg,rgba(61,139,253,.25),rgba(0,212,170,.12));border:1px solid rgba(61,139,253,.3)}
+    .bubble.agent{align-self:flex-start;background:var(--surface2);border:1px solid var(--border)}
+    .bubble.system{align-self:center;font-size:12px;color:var(--muted);background:transparent;border:none;padding:4px}
+    .bubble h3{margin:0 0 8px;font-size:13px;color:var(--accent2)}
+    .steps{display:flex;flex-direction:column;gap:6px;margin:10px 0 0}
+    .step{font-family:'JetBrains Mono',monospace;font-size:11px;padding:6px 8px;border-radius:8px;background:#0a1020;border:1px solid var(--border)}
+    .step.ok{border-color:rgba(45,212,160,.3);color:var(--ok)}
+    .step.fail{border-color:rgba(255,92,106,.35);color:var(--danger)}
+    .composer{padding:12px 14px;border-top:1px solid var(--border);background:var(--surface2)}
+    .controls{display:grid;grid-template-columns:1fr 90px 90px auto;gap:8px;margin-bottom:8px}
+    @media(max-width:700px){.controls{grid-template-columns:1fr 1fr}}
+    input,textarea,button{font-family:inherit}
+    input,textarea{background:#0a1020;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 11px;font-size:13px}
+    input:focus,textarea:focus{outline:none;border-color:rgba(61,139,253,.55);box-shadow:0 0 0 3px var(--glow)}
+    textarea{width:100%;min-height:72px;resize:vertical;margin-bottom:8px}
+    .btn-row{display:flex;gap:8px;flex-wrap:wrap}
+    button{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:10px;
+      padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+    button:hover{border-color:rgba(61,139,253,.45);background:#121c34}
+    button.primary{background:linear-gradient(135deg,var(--accent),#2b6fd4);border-color:transparent;color:#fff}
+    button.primary:hover{filter:brightness(1.08)}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);padding:0 4px}
+    .side .card{padding:12px 14px;border-bottom:1px solid var(--border)}
+    .metric{display:flex;justify-content:space-between;align-items:baseline;margin:6px 0}
+    .metric .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+    .metric .v{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600}
+    .metric .v.up{color:var(--ok)} .metric .v.down{color:var(--danger)}
+    .raw-toggle{font-size:11px;color:var(--accent);cursor:pointer;margin-top:8px}
+    pre.raw{font-family:'JetBrains Mono',monospace;font-size:10px;background:#0a1020;border:1px solid var(--border);
+      border-radius:10px;padding:10px;overflow:auto;max-height:200px;display:none;margin-top:6px}
+    .loading{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);
+      border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    footer{padding:8px 18px 14px;font-size:11px;color:var(--muted)}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h2>NerT AI PRO</h2>
-    <div class="card">
-      <div class="row">
-        <input id="symbol" placeholder="SYMBOL (ej: BTCUSDT)" value="BTCUSDT"/>
-        <input id="limit" placeholder="limit trades" value="2000"/>
-        <input id="iters" placeholder="iterations" value="900"/>
-        <label class="muted"><input id="apply" type="checkbox"/> aplicar cambios</label>
-      </div>
-      <div style="height:10px"></div>
-      <textarea id="msg" placeholder="Dime qué quieres optimizar...">optimiza el sistema con datos reales y corrige lógica defectuosa</textarea>
-      <div style="height:10px"></div>
-      <div class="row">
-        <button onclick="send()">Enviar</button>
-        <button onclick="status()">Status ML</button>
-        <button onclick="optimize()">Optimizar (directo)</button>
-      </div>
-      <div style="height:10px"></div>
-      <div id="out" class="log"></div>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="logo">NT</div>
+      <div><h1>NerT AI PRO</h1><span>Autonomous Quant Agent · Bybit</span></div>
     </div>
-    <p class="muted">API base disponible en /api (incluye endpoints de trading existentes).</p>
-  </div>
+    <div class="status-pills">
+      <div class="pill" id="pill-llm">LLM …</div>
+      <div class="pill" id="pill-bot">Bot …</div>
+      <div class="pill" id="pill-ml">ML …</div>
+    </div>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="panel-h"><span>Agent Console</span><span id="session-tag" style="font-weight:400;text-transform:none">—</span></div>
+      <div class="chat-feed" id="feed">
+        <div class="bubble system">Agente listo. Pide análisis de mercado, optimización o diagnóstico del sistema.</div>
+      </div>
+      <div class="composer">
+        <div class="controls">
+          <input id="symbol" value="BTCUSDT" placeholder="Symbol"/>
+          <input id="limit" value="2000" type="number" title="Limit trades"/>
+          <input id="iters" value="900" type="number" title="Iterations"/>
+          <label class="chk"><input id="apply" type="checkbox"/> Aplicar</label>
+        </div>
+        <textarea id="msg" placeholder="Ej: analiza el estado completo del sistema para BTCUSDT">analiza el estado completo del sistema</textarea>
+        <div class="btn-row">
+          <button class="primary" id="btn-send" onclick="send()">Enviar</button>
+        <button onclick="status()">Status ML</button>
+        <button onclick="validate()">Validar</button>
+        <button onclick="optimize()">Optimizar</button>
+        <button onclick="refreshMarket()">Ticker</button>
+        </div>
+      </div>
+    </section>
+    <aside class="panel side">
+      <div class="panel-h">Market Live</div>
+      <div class="card" id="market-card">
+        <div class="metric"><span class="k">Symbol</span><span class="v" id="m-sym">—</span></div>
+        <div class="metric"><span class="k">Last</span><span class="v" id="m-last">—</span></div>
+        <div class="metric"><span class="k">24h %</span><span class="v" id="m-pct">—</span></div>
+        <div class="metric"><span class="k">Bid / Ask</span><span class="v" id="m-ba">—</span></div>
+        <div class="metric"><span class="k">Volume 24h</span><span class="v" id="m-vol">—</span></div>
+        <div class="metric"><span class="k">Funding</span><span class="v" id="m-fund">—</span></div>
+      </div>
+      <div class="panel-h">Señal Live (motor)</div>
+      <div class="card" id="signal-card">
+        <div class="metric"><span class="k">Decision</span><span class="v" id="sig-dec">—</span></div>
+        <div class="metric"><span class="k">Combined</span><span class="v" id="sig-comb">—</span></div>
+        <div class="metric"><span class="k">Mom</span><span class="v" id="sig-mom">—</span></div>
+        <div class="metric"><span class="k">EGM / PIO</span><span class="v" id="sig-egm">—</span></div>
+        <div class="metric"><span class="k">Motor</span><span class="v" id="sig-bot">—</span></div>
+        <div class="metric"><span class="k">Bloqueo</span><span class="v" id="sig-block" style="font-size:11px">—</span></div>
+      </div>
+      <div class="panel-h">System</div>
+      <div class="card" id="sys-card">
+        <div class="metric"><span class="k">Backend</span><span class="v" id="s-backend">—</span></div>
+        <div class="metric"><span class="k">Model</span><span class="v" id="s-model">—</span></div>
+        <div class="metric"><span class="k">Buy TH</span><span class="v" id="s-buy">—</span></div>
+        <div class="metric"><span class="k">Sell TH</span><span class="v" id="s-sell">—</span></div>
+      </div>
+    </aside>
+  </main>
+  <footer>API: <code>/api</code> · Agent: <code>/agent/chat</code> · Docs: <code>/docs</code></footer>
+</div>
 <script>
-const out = document.getElementById('out');
-function log(x){ out.textContent = typeof x === 'string' ? x : JSON.stringify(x,null,2); }
-async function send(){
-  const body = {
-    message: document.getElementById('msg').value,
-    symbol: document.getElementById('symbol').value,
-    limit: parseInt(document.getElementById('limit').value||'2000',10),
-    iterations: parseInt(document.getElementById('iters').value||'900',10),
-    apply: document.getElementById('apply').checked
-  };
-  const r = await fetch('/agent/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-  log(await r.json());
+const feed = document.getElementById('feed');
+let busy = false;
+
+function addBubble(cls, html) {
+  const d = document.createElement('div');
+  d.className = 'bubble ' + cls;
+  d.innerHTML = html;
+  feed.appendChild(d);
+  feed.scrollTop = feed.scrollHeight;
+  return d;
 }
-async function status(){
+
+function fmtAnalysis(text) {
+  return '<h3>Análisis del Agente</h3>' + (text || '').replace(/\\n/g, '<br/>');
+}
+
+function renderPlanSteps(results) {
+  if (!Array.isArray(results)) return '';
+  return '<div class="steps">' + results.map(r => {
+    const ok = !!r.ok;
+    const tool = r.tool || '?';
+    const detail = ok ? 'OK' : ((r.result && (r.result.message || r.result.error)) || 'FAIL');
+    return `<div class="step ${ok?'ok':'fail'}">${ok?'✓':'✗'} ${tool} — ${detail}</div>`;
+  }).join('') + '</div>';
+}
+
+function renderResponse(data) {
+  let html = '';
+  if (data.intent === 'react' && data.agent) {
+    const ag = data.agent;
+    if (ag.answer) html += fmtAnalysis(ag.answer);
+    else html += '<h3>Agente ReAct</h3>Sin respuesta final.';
+    if (Array.isArray(ag.trace) && ag.trace.length) {
+      html += '<div class="steps">' + ag.trace.map(s => {
+        if (s.type === 'final') return `<div class="step ok">✓ final — ${(s.thought||'').slice(0,80)}</div>`;
+        const ok = !!(s.observation && s.observation.ok !== false);
+        return `<div class="step ${ok?'ok':'fail'}">${ok?'✓':'✗'} ${s.tool||'?'} — ${(s.thought||'').slice(0,60)}</div>`;
+      }).join('') + '</div>';
+      html += `<div style="margin-top:8px;font-size:11px;color:var(--muted)">Modo ReAct · ${ag.steps_used||0} pasos · ${ag.tools_total||'?'} tools total · ${ag.bybit_env||'?'} · ${ag.backend||'llm'}</div>`;
+    }
+    const rawId = 'raw-' + Date.now();
+    html += `<div class="raw-toggle" onclick="document.getElementById('${rawId}').style.display=document.getElementById('${rawId}').style.display==='block'?'none':'block'">Ver JSON completo</div>`;
+    html += `<pre class="raw" id="${rawId}">${JSON.stringify(data, null, 2)}</pre>`;
+    return html;
+  }
+  const syn = data.synthesis;
+  if (syn && syn.analysis) {
+    html += fmtAnalysis(syn.analysis);
+  } else if (data.intent === 'status') {
+    html += '<h3>Status</h3>' + JSON.stringify(data, null, 2);
+  } else {
+    const results = data.execution && data.execution.results;
+    const llmStep = Array.isArray(results) && results.find(r => r.tool === 'llm_chat' && r.ok);
+    if (llmStep) {
+      const content = (((llmStep.result||{}).result||{}).content) || '';
+      if (content) html += fmtAnalysis(content);
+    }
+    if (!html) html += '<h3>Orquestación completada</h3>Revisa pasos ejecutados abajo.';
+    html += renderPlanSteps(results);
+  }
+  const rawId = 'raw-' + Date.now();
+  html += `<div class="raw-toggle" onclick="document.getElementById('${rawId}').style.display=document.getElementById('${rawId}').style.display==='block'?'none':'block'">Ver JSON completo</div>`;
+  html += `<pre class="raw" id="${rawId}">${JSON.stringify(data, null, 2)}</pre>`;
+  return html;
+}
+
+async function send() {
+  if (busy) return;
+  const msg = document.getElementById('msg').value.trim();
+  if (!msg) return;
+  busy = true;
+  document.getElementById('btn-send').disabled = true;
+  addBubble('user', msg.replace(/\\n/g, '<br/>'));
+  const loading = addBubble('agent', '<span class="loading"></span> Ejecutando plan autónomo…');
+  try {
+    const body = {
+      message: msg,
+      symbol: document.getElementById('symbol').value,
+      limit: parseInt(document.getElementById('limit').value||'2000',10),
+      iterations: parseInt(document.getElementById('iters').value||'900',10),
+      apply: document.getElementById('apply').checked
+    };
+    const r = await fetch('/agent/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    const data = await r.json();
+    if (data.session_id) document.getElementById('session-tag').textContent = data.session_id.slice(0,8);
+    loading.innerHTML = renderResponse(data);
+    await refreshMarket();
+  } catch (e) {
+    loading.innerHTML = '<h3>Error</h3>' + String(e);
+    loading.querySelector('h3') && (loading.className = 'bubble agent');
+  } finally {
+    busy = false;
+    document.getElementById('btn-send').disabled = false;
+  }
+}
+
+async function status() {
+  addBubble('system', 'Consultando Status ML…');
   const r = await fetch('/api/ml/status');
-  log(await r.json());
+  const data = await r.json();
+  addBubble('agent', '<h3>ML Status</h3><pre class="raw" style="display:block;max-height:160px">'+JSON.stringify(data,null,2)+'</pre>');
 }
-async function optimize(){
-  const body = {
-    symbol: document.getElementById('symbol').value,
-    limit: parseInt(document.getElementById('limit').value||'2000',10),
-    iterations: parseInt(document.getElementById('iters').value||'900',10),
-    apply: document.getElementById('apply').checked
-  };
-  const r = await fetch('/agent/optimize',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-  log(await r.json());
+
+async function validate() {
+  const loading = addBubble('agent', '<span class="loading"></span> Validando cableado…');
+  const r = await fetch('/agent/validate', {method:'POST'});
+  const data = await r.json();
+  const rows = (data.checks||[]).map(c => `<div class="step ${c.ok?'ok':'fail'}">${c.ok?'✓':'✗'} ${c.tool}</div>`).join('');
+  loading.innerHTML = `<h3>Validación ${data.passed}/${data.total}</h3><div class="steps">${rows}</div><pre class="raw" style="display:block;max-height:120px">${JSON.stringify(data.bybit_env,null,2)}</pre>`;
 }
+
+async function optimize() {
+  if (busy) return;
+  busy = true;
+  document.getElementById('btn-send').disabled = true;
+  const loading = addBubble('agent', '<span class="loading"></span> Optimizando…');
+  try {
+    const body = {
+      symbol: document.getElementById('symbol').value,
+      limit: parseInt(document.getElementById('limit').value||'2000',10),
+      iterations: parseInt(document.getElementById('iters').value||'900',10),
+      apply: document.getElementById('apply').checked
+    };
+    const r = await fetch('/agent/optimize',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    const data = await r.json();
+    loading.innerHTML = '<h3>Optimización</h3><pre class="raw" style="display:block;max-height:200px">'+JSON.stringify(data,null,2)+'</pre>';
+  } finally {
+    busy = false;
+    document.getElementById('btn-send').disabled = false;
+  }
+}
+
+async function refreshMarket() {
+  const sym = document.getElementById('symbol').value || 'BTCUSDT';
+  try {
+    const r = await fetch('/market/ticker/' + encodeURIComponent(sym));
+    const d = await r.json();
+    if (!d.ok) return;
+    document.getElementById('m-sym').textContent = d.symbol || sym;
+    document.getElementById('m-last').textContent = d.lastPrice || '—';
+    const raw = d.raw || {};
+    const pct = parseFloat(raw.price24hPcnt || 0) * 100;
+    const pctEl = document.getElementById('m-pct');
+    pctEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+    pctEl.className = 'v ' + (pct >= 0 ? 'up' : 'down');
+    document.getElementById('m-ba').textContent = (d.bid1Price||'—') + ' / ' + (d.ask1Price||'—');
+    document.getElementById('m-vol').textContent = d.volume24h || '—';
+    document.getElementById('m-fund').textContent = raw.fundingRate != null ? (parseFloat(raw.fundingRate)*100).toFixed(4)+'%' : '—';
+  } catch (_) {}
+}
+
+async function refreshSignals() {
+  const sym = document.getElementById('symbol').value || 'BTCUSDT';
+  try {
+    const r = await fetch('/api/decisions/' + encodeURIComponent(sym));
+    const d = await r.json();
+    const det = d.decision_detail || {};
+    const dec = (det.decision || '—').toUpperCase();
+    const decEl = document.getElementById('sig-dec');
+    decEl.textContent = dec;
+    decEl.className = 'v ' + (dec === 'BUY' ? 'up' : dec === 'SELL' ? 'down' : '');
+    document.getElementById('sig-comb').textContent = det.combined != null ? Number(det.combined).toFixed(3) : '—';
+    document.getElementById('sig-mom').textContent = det.mom != null ? Number(det.mom).toFixed(4) : '—';
+    const egm = det.egm != null ? Number(det.egm).toFixed(3) : '—';
+    const pio = det.pio != null ? Number(det.pio).toFixed(3) : '—';
+    document.getElementById('sig-egm').textContent = egm + ' / ' + pio;
+    const gates = d.execution_gates || {};
+    const blocked = gates.blocked_by || (Array.isArray(det.blockers_if_not_trading) && det.blockers_if_not_trading[0]) || '—';
+    document.getElementById('sig-block').textContent = blocked;
+    const live = await fetch('/agent/context?symbol=' + encodeURIComponent(sym)).then(x=>x.json()).catch(()=>({}));
+    const st = live.bot_live_state || {};
+    const motor = st.start_task_active ? 'LOOP ON' : (st.bot_running ? 'WS' : 'OFF');
+    document.getElementById('sig-bot').textContent = motor;
+    const pillBot = document.getElementById('pill-bot');
+    pillBot.textContent = motor === 'LOOP ON' ? 'Motor ON' : (motor === 'WS' ? 'Motor WS' : 'Motor OFF');
+    pillBot.className = 'pill ' + (motor === 'LOOP ON' ? 'ok' : motor === 'WS' ? 'warn' : '');
+  } catch (_) {}
+}
+
+async function refreshStatus() {
+  try {
+    const [llm, health] = await Promise.all([
+      fetch('/agent/llm/status').then(r=>r.json()),
+      fetch('/health').then(r=>r.json())
+    ]);
+    const pillLlm = document.getElementById('pill-llm');
+    pillLlm.textContent = 'LLM ' + (llm.backend || '—');
+    pillLlm.className = 'pill ' + (llm.ok ? 'ok' : 'warn');
+    document.getElementById('s-backend').textContent = llm.backend || '—';
+    document.getElementById('s-model').textContent = llm.model || '—';
+    const pillBot = document.getElementById('pill-bot');
+    pillBot.textContent = health.ok ? 'API Online' : 'API Down';
+    pillBot.className = 'pill ' + (health.ok ? 'ok' : 'warn');
+  } catch (_) {}
+  try {
+    const r = await fetch('/api/ml/status');
+    const ml = await r.json();
+    const pill = document.getElementById('pill-ml');
+    const enabled = !!(ml.enabled || ml.ml_enabled);
+    pill.textContent = 'ML ' + (enabled ? 'ON' : 'OFF');
+    pill.className = 'pill ' + (enabled ? 'ok' : '');
+  } catch (_) {}
+}
+
+document.getElementById('msg').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send();
+});
+
+refreshStatus();
+refreshMarket();
+refreshSignals();
+setInterval(refreshMarket, 15000);
+setInterval(refreshSignals, 5000);
+setInterval(refreshStatus, 30000);
 </script>
 </body>
 </html>"""
@@ -629,6 +956,9 @@ class ChatRequest(BaseModel):
     iterations: int = Field(default=900, ge=50, le=50000)
     seed: Optional[int] = None
     apply: bool = False
+    use_react: bool = True
+    max_steps: int = Field(default=8, ge=1, le=20)
+    include_mcp: bool = True
 
 
 class OptimizeRequest(BaseModel):
@@ -786,6 +1116,7 @@ async def lifespan(_: FastAPI):
             f"base_url='{_llm_cfg.base_url}'  api_key={'SET' if _llm_cfg.api_key else 'NOT SET'}"
         )
 
+        await nertzh.bot.start_storage()
         nertzh.bot.schedule_start()
         nertzh.bot.start_support_loop(interval_s=nertzh.bot.support_interval_s)
         if _monitor_task is None or _monitor_task.done():
@@ -819,6 +1150,10 @@ async def lifespan(_: FastAPI):
             except Exception:
                 pass
         try:
+            await nertzh.bot.stop_storage()
+        except Exception:
+            pass
+        try:
             maybe_stop = nertzh.bot.stop()
             if inspect.isawaitable(maybe_stop):
                 await maybe_stop
@@ -844,6 +1179,34 @@ def _new_session_id() -> str:
     return uuid.uuid4().hex
 
 
+def _normalize_tool_args(tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Normaliza aliases que el LLM planner suele inventar (prompt→message, limit→depth)."""
+    out = dict(args)
+    if tool == "llm_chat":
+        msg = str(out.get("message") or out.get("prompt") or out.get("query") or "").strip()
+        if not msg and isinstance(out.get("content"), str):
+            msg = str(out.get("content") or "").strip()
+        if msg:
+            out["message"] = msg
+        out.pop("prompt", None)
+        out.pop("query", None)
+    elif tool == "market_orderbook":
+        depth = out.get("depth")
+        if depth is None and out.get("limit") is not None:
+            depth = out.get("limit")
+        try:
+            d = int(depth) if depth is not None else 50
+        except Exception:
+            d = 50
+        out["depth"] = max(1, min(200, d))
+        out.pop("limit", None)
+    elif tool == "market_ticker":
+        sym = str(out.get("symbol") or out.get("pair") or "").strip().upper()
+        if sym:
+            out["symbol"] = sym
+    return out
+
+
 def _normalize_plan_step(step: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(step, dict):
         return None
@@ -856,20 +1219,169 @@ def _normalize_plan_step(step: Any) -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(args, dict):
         args = {}
-    return {"tool": t, "args": dict(args)}
+    return {"tool": t, "args": _normalize_tool_args(t, dict(args))}
+
+
+def _is_analysis_goal(goal: str) -> bool:
+    g = str(goal or "").lower()
+    keys = (
+        "analiz",
+        "estado",
+        "sistema",
+        "diagn",
+        "revis",
+        "reporte",
+        "resumen",
+        "overview",
+        "status",
+        "health",
+    )
+    return any(k in g for k in keys)
+
+
+def _orderbook_summary(bids: list, asks: list) -> Dict[str, Any]:
+    def _sum_side(levels: list) -> float:
+        total = 0.0
+        for row in levels or []:
+            if isinstance(row, (list, tuple)) and len(row) >= 2:
+                total += _safe_float(row[1], 0.0)
+        return float(total)
+
+    bid_vol = _sum_side(bids)
+    ask_vol = _sum_side(asks)
+    denom = bid_vol + ask_vol
+    imbalance = (bid_vol - ask_vol) / denom if denom > 0 else 0.0
+    return {
+        "bid_volume_top": round(bid_vol, 4),
+        "ask_volume_top": round(ask_vol, 4),
+        "imbalance": round(imbalance, 4),
+        "spread_hint": "bid_heavy" if imbalance > 0.15 else ("ask_heavy" if imbalance < -0.15 else "balanced"),
+    }
+
+
+def _collect_plan_context(results: list[Dict[str, Any]]) -> Dict[str, Any]:
+    ctx: Dict[str, Any] = {"steps": []}
+    for r in results or []:
+        if not isinstance(r, dict):
+            continue
+        tool = str(r.get("tool") or "")
+        res = r.get("result") if isinstance(r.get("result"), dict) else {}
+        step_ctx: Dict[str, Any] = {"tool": tool, "ok": bool(r.get("ok"))}
+        if tool == "market_ticker" and bool(res.get("ok")):
+            step_ctx["ticker"] = {
+                "symbol": res.get("symbol"),
+                "lastPrice": res.get("lastPrice"),
+                "bid1Price": res.get("bid1Price"),
+                "ask1Price": res.get("ask1Price"),
+                "highPrice24h": res.get("highPrice24h"),
+                "lowPrice24h": res.get("lowPrice24h"),
+                "volume24h": res.get("volume24h"),
+            }
+            raw = res.get("raw") if isinstance(res.get("raw"), dict) else {}
+            if raw:
+                step_ctx["ticker"]["fundingRate"] = raw.get("fundingRate")
+                step_ctx["ticker"]["openInterest"] = raw.get("openInterest")
+                step_ctx["ticker"]["price24hPcnt"] = raw.get("price24hPcnt")
+        elif tool == "market_orderbook" and bool(res.get("ok")):
+            bids = res.get("bids") if isinstance(res.get("bids"), list) else []
+            asks = res.get("asks") if isinstance(res.get("asks"), list) else []
+            step_ctx["orderbook"] = {
+                "symbol": res.get("symbol"),
+                "depth": res.get("depth"),
+                "levels_bids": len(bids),
+                "levels_asks": len(asks),
+                **_orderbook_summary(bids, asks),
+            }
+        elif tool == "optimize":
+            step_ctx["optimize"] = {
+                "success": res.get("success"),
+                "before": res.get("before"),
+                "best": (res.get("result") or {}).get("best") if isinstance(res.get("result"), dict) else res.get("best"),
+            }
+        elif tool == "llm_chat" and bool(res.get("ok")):
+            inner = res.get("result") if isinstance(res.get("result"), dict) else {}
+            content = inner.get("content")
+            if isinstance(content, str) and content.strip():
+                step_ctx["llm_reply"] = content.strip()[:4000]
+        ctx["steps"].append(step_ctx)
+    return ctx
+
+
+async def _auto_synthesize_analysis(
+    *,
+    goal: str,
+    symbol: Optional[str],
+    results: list[Dict[str, Any]],
+    session_id: str,
+) -> Dict[str, Any]:
+    """Síntesis autónoma cuando el plan falla o el usuario pide análisis del sistema."""
+    ctx = _collect_plan_context(results)
+    ctx["goal"] = goal
+    ctx["symbol"] = symbol
+    try:
+        cfg = _llm_config()
+        bot = nertzh.bot
+        ctx["system"] = {
+            "running": bool(getattr(bot, "running", False)),
+            "symbols": list(getattr(bot, "symbols", []) or []),
+            "mode": str(getattr(bot, "mode", "") or ""),
+            "ml_enabled": bool(getattr(nertzh.config, "ML_ENABLED", False)),
+            "thresholds": {
+                "buy": float(getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 8.0)),
+                "sell": float(getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -8.0)),
+                "hold_band": float(getattr(nertzh.config, "COMBINED_HOLD_BAND", 2.0)),
+            },
+        }
+    except Exception as e:
+        ctx["system"] = {"error": str(e)}
+
+    system = (
+        "Eres NerT AI PRO, agente cuantitativo autónomo. "
+        "Analiza el estado del sistema y del mercado con los datos provistos. "
+        "Responde en español, estructurado con secciones claras: "
+        "Mercado, Orderbook, Motor/ML, Riesgos, Recomendaciones. "
+        "Sé conciso pero accionable. No inventes datos que no estén en el contexto."
+    )
+    user = (
+        f"Objetivo del usuario: {goal}\n\n"
+        f"Contexto recopilado:\n{json.dumps(ctx, ensure_ascii=False, indent=2)}\n\n"
+        "Genera el análisis completo del estado del sistema."
+    )
+    res = await llm_chat(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+    )
+    out = {
+        "ok": bool(res.get("ok")),
+        "synthesizer": "auto",
+        "backend": res.get("backend"),
+        "model": res.get("model"),
+        "analysis": res.get("content") if bool(res.get("ok")) else None,
+        "error": res.get("error") if not bool(res.get("ok")) else None,
+        "context_summary": ctx,
+    }
+    agent_memory.add_event("synthesis", {"session_id": session_id, "out": out})
+    return out
 
 
 def _heuristic_plan(req: AgentPlanRequest) -> Dict[str, Any]:
     msg = str(req.goal or "").lower()
     plan: list[Dict[str, Any]] = []
     sym = str(req.symbol or "").strip() or None
-    if ("ticker" in msg) or ("precio" in msg) or ("price" in msg):
-        plan.append({"tool": "market_ticker", "args": {"symbol": sym or "BTCUSDT"}})
-    if ("orderbook" in msg) or ("libro" in msg) or ("profund" in msg):
+    sym_default = sym or "BTCUSDT"
+    wants_analysis = _is_analysis_goal(req.goal)
+    if wants_analysis:
+        plan.append({"tool": "bot_live_state", "args": {"symbol": sym_default}})
+        plan.append({"tool": "nertzh_api.decisions", "args": {"symbol": sym_default}})
+    if wants_analysis or ("ticker" in msg) or ("precio" in msg) or ("price" in msg) or ("mercado" in msg):
+        plan.append({"tool": "market_ticker", "args": {"symbol": sym_default}})
+    if wants_analysis or ("orderbook" in msg) or ("libro" in msg) or ("profund" in msg):
         plan.append(
             {
                 "tool": "market_orderbook",
-                "args": {"symbol": sym or "BTCUSDT", "depth": 50},
+                "args": {"symbol": sym_default, "depth": 50},
             }
         )
     if ("entren" in msg or "train" in msg) and ("ml" in msg or "modelo" in msg):
@@ -902,7 +1414,19 @@ def _heuristic_plan(req: AgentPlanRequest) -> Dict[str, Any]:
                 },
             }
         )
-    if not plan:
+    if wants_analysis and plan:
+        plan.append(
+            {
+                "tool": "llm_chat",
+                "args": {
+                    "message": (
+                        f"Analiza el estado completo del sistema para {sym_default} "
+                        "usando los datos de ticker y orderbook recopilados en el contexto."
+                    ),
+                },
+            }
+        )
+    elif not plan:
         plan.append({"tool": "llm_chat", "args": {"message": req.goal}})
     return {"ok": True, "planner": "heuristic", "plan": plan}
 
@@ -917,9 +1441,17 @@ async def _llm_plan(req: AgentPlanRequest) -> Dict[str, Any]:
             "model": cfg.model,
         }
     system = (
-        "Eres un planificador de agente. Devuelve SOLO JSON válido sin markdown. "
+        "Eres un planificador de agente cuantitativo. Devuelve SOLO JSON válido sin markdown. "
         'Salida: {"plan":[{"tool":"...","args":{...}}]}. '
         f"tools permitidas: {sorted(ALLOWED_TOOLS)}. "
+        "Esquemas EXACTOS de args (no uses otras claves): "
+        'market_ticker: {"symbol":"BTCUSDT"}; '
+        'market_orderbook: {"symbol":"BTCUSDT","depth":50} (depth 1-200, NO uses "limit"); '
+        'optimize: {"symbol":null,"limit":2000,"iterations":900,"seed":null,"apply":false}; '
+        'train_ml: {"symbol":null,"min_samples":null}; '
+        'autoevolve: {"symbol":null,"limit":2000,"iterations":900,"rounds":2,"seed":null,"apply":false,"use_llm":true}; '
+        'llm_chat: {"message":"texto del análisis o pregunta"} (usa "message", NUNCA "prompt"). '
+        "Para análisis de mercado/sistema: ticker + orderbook + llm_chat con message descriptivo. "
         "Reglas: tool debe ser una de las permitidas. args debe ser objeto. No inventes claves fuera de plan."
     )
     ctx = {
@@ -1004,7 +1536,7 @@ async def _run_plan(
                 break
             continue
         tool = s["tool"]
-        args = s["args"]
+        args = _normalize_tool_args(tool, s["args"])
         out: Dict[str, Any]
         try:
             if tool == "market_ticker":
@@ -1057,9 +1589,16 @@ async def _run_plan(
                 )
                 out = await agent_autoevolve(req2)
             elif tool == "llm_chat":
-                msg = str(args.get("message") or "")
+                msg = str(args.get("message") or "").strip()
                 sys_prompt = args.get("system")
                 ctx = args.get("context")
+                if not isinstance(ctx, dict) or not ctx:
+                    ctx = _collect_plan_context(results)
+                if not msg:
+                    msg = (
+                        "Analiza el estado del sistema y del mercado usando el contexto "
+                        "de los pasos anteriores. Responde en español con recomendaciones."
+                    )
                 req2 = LLMChatRequest(
                     message=msg,
                     system=(str(sys_prompt) if isinstance(sys_prompt, str) else None),
@@ -1165,7 +1704,7 @@ async def health():
 @app.get("/agent/llm/status")
 async def agent_llm_status():
     cfg = _llm_config()
-    return {
+    out: Dict[str, Any] = {
         "ok": True,
         "backend": cfg.backend,
         "base_url": cfg.base_url,
@@ -1175,6 +1714,10 @@ async def agent_llm_status():
         "has_api_key": bool(cfg.api_key),
         "timestamp": int(time.time() * 1000),
     }
+    if cfg.backend in {"qwen_desktop", "qwen-desktop", "qwen_studio", "qwen-studio"}:
+        out["model"] = _qwen_normalize_model(cfg.model)
+        out["qwen_desktop"] = await qwen_desktop_status()
+    return out
 
 
 @app.post("/agent/llm/chat")
@@ -1322,32 +1865,55 @@ def _apply_optimization(symbol: Optional[str], best: Dict[str, Any]) -> Dict[str
         try:
             import datetime as _dt
             with nertzh.SessionLocal() as _db:
-                _snap = nertzh.ThresholdSnapshot(
-                    timestamp=_dt.datetime.now(_dt.timezone.utc),
-                    egm_buy_threshold=float(
-                        getattr(nertzh.config, "EGM_BUY_THRESHOLD", 0.02)
-                    ),
-                    egm_sell_threshold=float(
-                        getattr(nertzh.config, "EGM_SELL_THRESHOLD", -0.02)
-                    ),
-                    combined_buy_threshold=float(
-                        getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 8.0)
-                    ),
-                    combined_sell_threshold=float(
-                        getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -8.0)
-                    ),
-                    stats={"combined_weights": dict(w), "source": "agent_optimize"},
-                )
-                _db.add(_snap)
-                _db.commit()
-                applied["weights_persisted_to_db"] = True
+                # Solo guardar si hay algún cambio significativo en los thresholds o pesos
+                last_snap = _db.query(nertzh.ThresholdSnapshot).order_by(
+                    nertzh.ThresholdSnapshot.timestamp.desc()
+                ).first()
+                
+                current_buy_th = float(getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 8.0))
+                current_sell_th = float(getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -8.0))
+                
+                # Comparar con el último snapshot para evitar duplicados innecesarios
+                should_save = True
+                if last_snap is not None:
+                    # Si ambos thresholds son prácticamente iguales, no guardar
+                    th_buy_equal = abs(last_snap.combined_buy_threshold - current_buy_th) < 0.001
+                    th_sell_equal = abs(last_snap.combined_sell_threshold - current_sell_th) < 0.001
+                    
+                    # También comprobar si los pesos son iguales
+                    last_weights = last_snap.stats.get("combined_weights") if isinstance(last_snap.stats, dict) else None
+                    current_weights = dict(w)
+                    
+                    weights_equal = last_weights == current_weights
+                    
+                    if th_buy_equal and th_sell_equal and weights_equal:
+                        should_save = False
+                
+                if should_save:
+                    _snap = nertzh.ThresholdSnapshot(
+                        timestamp=_dt.datetime.now(_dt.timezone.utc),
+                        egm_buy_threshold=float(
+                            getattr(nertzh.config, "EGM_BUY_THRESHOLD", 0.02)
+                        ),
+                        egm_sell_threshold=float(
+                            getattr(nertzh.config, "EGM_SELL_THRESHOLD", -0.02)
+                        ),
+                        combined_buy_threshold=current_buy_th,
+                        combined_sell_threshold=current_sell_th,
+                        stats={"combined_weights": current_weights, "source": "agent_optimize"},
+                    )
+                    _db.add(_snap)
+                    _db.commit()
+                    applied["weights_persisted_to_db"] = True
+                else:
+                    applied["weights_persisted_to_db"] = True  # Considerar como guardado porque no era necesario
         except Exception as _e:
             applied["weights_persisted_to_db"] = False
             applied["weights_persist_error"] = str(_e)
 
     if bool(getattr(nertzh.config, "PERSIST_THRESHOLDS_TO_ENV", False)):
         env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-        applied["persisted"] = nertzh._persist_thresholds_to_env(env_path)
+        applied["persisted"] = nertzh._persist_thresholds_to_env(str(env_path))
 
     return applied
 
@@ -1858,6 +2424,15 @@ async def agent_memory_recent(limit: int = 50, kind: Optional[str] = None):
     }
 
 
+@app.get("/agent/analyze")
+async def agent_analyze_trading_data(
+    results_path: str = "logs/results.json",
+    jsonl_path: str = "data/metrics_snapshots.jsonl",
+):
+    """Análisis streaming de results.json + metrics_snapshots.jsonl (archivos grandes)."""
+    return analyze_trading_data(results_path=results_path, jsonl_path=jsonl_path)
+
+
 @app.post("/agent/memory/clear")
 async def agent_memory_clear():
     deleted = agent_memory.clear()
@@ -1902,6 +2477,248 @@ def _reflection_from_opt(baseline: Any, best: Any) -> Dict[str, Any]:
     }
 
 
+async def _fetch_nertzh_api(
+    path: str,
+    *,
+    method: str = "GET",
+    body: Optional[Dict[str, Any]] = None,
+    query: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    async def _do(session: aiohttp.ClientSession) -> Dict[str, Any]:
+        url = f"http://127.0.0.1:8787/api{path}"
+        params = query if isinstance(query, dict) else None
+        m = str(method or "GET").upper()
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            if m == "POST":
+                async with session.post(url, json=body or {}, params=params, timeout=timeout) as resp:
+                    data = await resp.json(content_type=None)
+                    return {"ok": int(resp.status) < 400, "status": int(resp.status), "data": data}
+            async with session.get(url, params=params, timeout=timeout) as resp:
+                data = await resp.json(content_type=None)
+                return {"ok": int(resp.status) < 400, "status": int(resp.status), "data": data}
+        except Exception as e:
+            return {"ok": False, "error": "api_error", "path": path, "message": str(e)}
+
+    return await _with_http_session(_do)
+
+
+async def _execute_agent_tool(
+    tool: str,
+    args: Dict[str, Any],
+    ctx: Dict[str, Any],
+) -> Dict[str, Any]:
+    sym = str(args.get("symbol") or ctx.get("symbol") or "BTCUSDT").strip().upper()
+    t = str(tool or "").strip()
+    allow_mut = bool(ctx.get("allow_mutations")) or bool(args.get("allow_mutations"))
+    try:
+        if t == "tool_search":
+            return tool_search_for_agent(
+                str(args.get("query") or args.get("q") or ""),
+                limit=int(args.get("limit") or 15),
+            )
+        if t == "project_context":
+            return project_context_snapshot()
+        if t == "bot_live_state":
+            return bot_live_state_snapshot(symbol=sym)
+        if t == "src_list":
+            return list_src_tree(
+                subpath=str(args.get("subpath") or "src"),
+                max_depth=int(args.get("max_depth") or 2),
+            )
+        if t == "src_read":
+            return read_project_file(
+                str(args.get("path") or "src/Nertzh.py"),
+                offset=int(args.get("offset") or 1),
+                limit=int(args.get("limit") or 80),
+            )
+        if t == "json_file_info":
+            return json_file_info(str(args.get("path") or "logs/results.json"))
+        if t == "analyze_trading_data":
+            return analyze_trading_data(
+                results_path=str(args.get("results_path") or "logs/results.json"),
+                jsonl_path=str(args.get("jsonl_path") or "data/metrics_snapshots.jsonl"),
+            )
+        if t == "src_grep":
+            return grep_project(
+                str(args.get("pattern") or ""),
+                subpath=str(args.get("subpath") or "src"),
+                glob=str(args.get("glob") or "*.py"),
+                head_limit=int(args.get("head_limit") or 25),
+            )
+        if t == "src_outline":
+            return src_module_outline(str(args.get("module") or "Nertzh.py"))
+        if t == "market_ticker":
+            return await _get_public_ticker(sym)
+        if t == "market_orderbook":
+            depth = int(args.get("depth") or args.get("limit") or 50)
+            return await _get_public_orderbook(sym, depth=depth)
+        if t.startswith("nertzh_api."):
+            api_path = resolve_nertzh_path(t, {**args, "symbol": sym})
+            if not api_path:
+                return {"ok": False, "error": "unknown_nertzh_api", "tool": t}
+            q = {k: v for k, v in args.items() if k not in {"symbol", "limit", "path"}}
+            return await _fetch_nertzh_api(api_path, query=q if q else None)
+        if t == "nertzh_api" and isinstance(args.get("path"), str):
+            return await _fetch_nertzh_api(
+                str(args["path"]),
+                method=str(args.get("method") or "GET"),
+                body=args.get("body") if isinstance(args.get("body"), dict) else None,
+            )
+        # aliases legacy
+        legacy = {
+            "nertzh_metrics": f"/metrics/{sym}",
+            "nertzh_combined": f"/combined/{sym}",
+            "nertzh_trades": f"/trades/{sym}",
+            "nertzh_ml_status": "/ml/status",
+            "nertzh_agent_status": "/admin/agent/status",
+        }
+        if t in legacy:
+            return await _fetch_nertzh_api(legacy[t])
+        if t == "optimize":
+            req2 = OptimizeRequest(
+                symbol=args.get("symbol") if isinstance(args.get("symbol"), str) else sym,
+                limit=int(args.get("limit") or ctx.get("limit") or 2000),
+                iterations=int(args.get("iterations") or ctx.get("iterations") or 900),
+                seed=args.get("seed") if isinstance(args.get("seed"), int) else None,
+                apply=bool(args.get("apply")),
+            )
+            return await agent_optimize(req2)
+        if t == "train_ml":
+            req2 = TrainMLRequest(
+                symbol=args.get("symbol") if isinstance(args.get("symbol"), str) else sym,
+                min_samples=args.get("min_samples"),
+            )
+            return await agent_train_ml(req2)
+        if t == "autoevolve":
+            req2 = AutoEvolveRequest(
+                symbol=args.get("symbol") if isinstance(args.get("symbol"), str) else sym,
+                limit=int(args.get("limit") or 2000),
+                iterations=int(args.get("iterations") or 900),
+                rounds=int(args.get("rounds") or 2),
+                seed=args.get("seed") if isinstance(args.get("seed"), int) else None,
+                apply=bool(args.get("apply")),
+                use_llm=bool(args.get("use_llm", True)),
+            )
+            return await agent_autoevolve(req2)
+        if t == "llm_chat":
+            msg = str(args.get("message") or args.get("prompt") or "").strip()
+            req2 = LLMChatRequest(message=msg or "Analiza el contexto.", context=args.get("context") or {})
+            return await agent_llm_chat(req2)
+        if t.startswith("mcp_bybit."):
+            return await call_bybit_mcp(t, args, allow_mutations=allow_mut)
+        if t.startswith("mcp_") and t.endswith("_catalog"):
+            return {
+                "ok": False,
+                "error": "catalog_only",
+                "message": f"{t} es referencia de schema MCP (IDE). Usa mcp_bybit.* ejecutable o nertzh_api.*",
+            }
+        return {
+            "ok": False,
+            "error": "unknown_tool",
+            "tool": t,
+            "hint": "Usa tool_search para encontrar herramientas en el catálogo completo.",
+        }
+    except Exception as e:
+        return {"ok": False, "error": "exception", "tool": t, "message": str(e)}
+
+
+@app.get("/agent/tools")
+async def agent_tools(
+    include_mcp: bool = True,
+    full: bool = False,
+    query: Optional[str] = None,
+    limit: int = 50,
+):
+    if isinstance(query, str) and query.strip():
+        hits = search_tools(query.strip(), limit=int(limit))
+        return {
+            "ok": True,
+            "query": query.strip(),
+            "count": len(hits),
+            "tools": hits,
+            "timestamp": int(time.time() * 1000),
+        }
+    catalog = (
+        build_full_catalog(include_mcp=bool(include_mcp), include_mcp_mutations=full)
+        if bool(full)
+        else build_prompt_catalog(include_mcp=bool(include_mcp))
+    )
+    mcp_stat = await mcp_status()
+    stats = registry_stats()
+    return {
+        "ok": True,
+        "stats": stats,
+        "prompt_core": len(build_prompt_catalog(include_mcp=True)),
+        "returned": len(catalog),
+        "tools": catalog,
+        "mcp": mcp_stat,
+        "bybit_env": bybit_env_info(),
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+@app.get("/agent/context")
+async def agent_context(symbol: Optional[str] = "BTCUSDT"):
+    sym = str(symbol or "BTCUSDT").strip().upper()
+    return {
+        **project_context_snapshot(),
+        "bot_live_state": bot_live_state_snapshot(symbol=sym),
+        "registry": registry_stats(),
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+@app.post("/agent/validate")
+async def agent_validate():
+    """Valida cableado de herramientas críticas (demo-aware)."""
+    sym = "BTCUSDT"
+    checks: List[Dict[str, Any]] = []
+
+    async def _chk(name: str, coro) -> None:
+        try:
+            res = await coro
+            checks.append({"tool": name, "ok": bool(res.get("ok", True)), "sample": _sample(res)})
+        except Exception as e:
+            checks.append({"tool": name, "ok": False, "error": str(e)})
+
+    await _chk("project_context", _execute_agent_tool("project_context", {}, {"symbol": sym}))
+    await _chk("bot_live_state", _execute_agent_tool("bot_live_state", {"symbol": sym}, {"symbol": sym}))
+    await _chk("nertzh_api.decisions", _execute_agent_tool("nertzh_api.decisions", {"symbol": sym}, {"symbol": sym}))
+    await _chk("src_read", _execute_agent_tool("src_read", {"path": "src/Nertzh.py", "limit": 5}, {}))
+    await _chk("market_ticker", _execute_agent_tool("market_ticker", {"symbol": sym}, {}))
+    await _chk("nertzh_api.config", _execute_agent_tool("nertzh_api.config", {}, {}))
+    await _chk("nertzh_api.storage_recent", _execute_agent_tool("nertzh_api.storage_recent", {"symbol": sym, "limit": 3}, {"symbol": sym}))
+    await _chk("nertzh_api.metrics", _execute_agent_tool("nertzh_api.metrics", {"symbol": sym}, {}))
+    await _chk("nertzh_api.balance", _execute_agent_tool("nertzh_api.balance", {}, {}))
+    await _chk("mcp_bybit.getTickers", _execute_agent_tool("mcp_bybit.getTickers", {"category": "linear", "symbol": sym}, {}))
+    demo_block = await _execute_agent_tool("mcp_bybit.getWalletBalance", {"accountType": "UNIFIED"}, {})
+    checks.append({
+        "tool": "mcp_bybit.getWalletBalance_demo_guard",
+        "ok": demo_block.get("error") == "demo_use_nertzh_api" if bybit_env_info().get("is_demo") else bool(demo_block.get("ok")),
+        "sample": _sample(demo_block),
+    })
+    await _chk("tool_search", _execute_agent_tool("tool_search", {"query": "orderbook kline"}, {}))
+
+    passed = sum(1 for c in checks if c.get("ok"))
+    return {
+        "ok": passed == len(checks),
+        "passed": passed,
+        "total": len(checks),
+        "bybit_env": bybit_env_info(),
+        "registry": registry_stats(),
+        "checks": checks,
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+def _sample(res: Dict[str, Any], max_len: int = 200) -> Any:
+    if not isinstance(res, dict):
+        return res
+    s = json.dumps({k: res[k] for k in list(res.keys())[:6]}, ensure_ascii=False)
+    return s[:max_len] + ("..." if len(s) > max_len else "")
+
+
 @app.post("/agent/chat")
 async def agent_chat(req: ChatRequest):
     session_id = _new_session_id()
@@ -1924,9 +2741,11 @@ async def agent_chat(req: ChatRequest):
             "ok": True,
             "intent": "status",
             "session_id": session_id,
-            "api": {"openapi": "/openapi.json", "base_api": "/api"},
-            "tools": sorted(ALLOWED_TOOLS),
-            "hint": "Usa /agent/plan y /agent/execute para multi-tarea; o escribe 'planifica ...'",
+            "api": {"openapi": "/openapi.json", "base_api": "/api", "agent_tools": "/agent/tools", "validate": "/agent/validate"},
+            "registry": registry_stats(),
+            "bybit_env": bybit_env_info(),
+            "project": project_context_snapshot(),
+            "hint": "Modo ReAct activo (use_react=true). Usa tool_search y src_read para explorar.",
             "timestamp": int(time.time() * 1000),
         }
         agent_memory.add_event("chat_out", {"session_id": session_id, "out": out})
@@ -1943,6 +2762,27 @@ async def agent_chat(req: ChatRequest):
         }
         agent_memory.add_event("chat_out", {"session_id": session_id, "out": out2})
         return out2
+
+    if bool(req.use_react):
+        react_out = await run_react_agent(
+            goal=msg,
+            symbol=req.symbol,
+            execute_tool=_execute_agent_tool,
+            llm_chat_fn=llm_chat,
+            max_steps=int(req.max_steps),
+            include_mcp=bool(req.include_mcp),
+            allow_mutations=bool(req.apply),
+            session_id=session_id,
+        )
+        out = {
+            "ok": bool(react_out.get("ok")),
+            "intent": "react",
+            "session_id": session_id,
+            "agent": react_out,
+            "timestamp": int(time.time() * 1000),
+        }
+        agent_memory.add_event("chat_out", {"session_id": session_id, "out": out})
+        return out
 
     req_plan = AgentPlanRequest(
         goal=msg,
@@ -1962,13 +2802,29 @@ async def agent_chat(req: ChatRequest):
     if not isinstance(plan, list):
         plan = [{"tool": "llm_chat", "args": {"message": msg}}]
 
-    exec_out = await _run_plan(plan, session_id=session_id, stop_on_error=True)
+    exec_out = await _run_plan(plan, session_id=session_id, stop_on_error=False)
+    results = exec_out.get("results") if isinstance(exec_out.get("results"), list) else []
+    llm_ok = any(
+        isinstance(r, dict)
+        and r.get("tool") == "llm_chat"
+        and bool((r.get("result") or {}).get("ok"))
+        for r in results
+    )
+    synthesis = None
+    if not llm_ok:
+        synthesis = await _auto_synthesize_analysis(
+            goal=msg,
+            symbol=req.symbol,
+            results=results,
+            session_id=session_id,
+        )
     out = {
         "ok": True,
         "intent": "orchestrate",
         "session_id": session_id,
         "planner": planner,
         "execution": exec_out,
+        "synthesis": synthesis,
         "timestamp": int(time.time() * 1000),
     }
     agent_memory.add_event("chat_out", {"session_id": session_id, "out": out})
