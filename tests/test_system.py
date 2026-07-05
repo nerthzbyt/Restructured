@@ -44,8 +44,7 @@ class BybitClientUsageTests(unittest.TestCase):
             "LIVE_TRADING_ENABLED": getattr(self._config, "LIVE_TRADING_ENABLED", False),
             "BYBIT_API_KEY": getattr(self._config, "BYBIT_API_KEY", None),
             "BYBIT_API_SECRET": getattr(self._config, "BYBIT_API_SECRET", None),
-            "BYBIT_ENV": getattr(self._config, "BYBIT_ENV", ""),
-            "USE_TESTNET": getattr(self._config, "USE_TESTNET", True),
+            "BYBIT_ENV": getattr(self._config, "BYBIT_ENV", "mainnet"),
         }
         self._saved_client = nertzh.BybitV5Client
 
@@ -66,7 +65,6 @@ class BybitClientUsageTests(unittest.TestCase):
         self._config.BYBIT_API_KEY = "k"
         self._config.BYBIT_API_SECRET = "s"
         self._config.BYBIT_ENV = "demo"
-        self._config.USE_TESTNET = True
         nertzh.BybitV5Client = DummyBybitClient
         engine = nertzh.NertzMetalEngine()
         client = engine._bybit_client()
@@ -74,18 +72,17 @@ class BybitClientUsageTests(unittest.TestCase):
         self.assertIsNotNone(client)
         self.assertEqual(client.base_url, "https://api-demo.bybit.com")
 
-    def test_unidad_bybit_client_testnet(self):
+    def test_unidad_bybit_client_mainnet(self):
         self._config.LIVE_TRADING_ENABLED = True
         self._config.BYBIT_API_KEY = "k"
         self._config.BYBIT_API_SECRET = "s"
-        self._config.BYBIT_ENV = ""
-        self._config.USE_TESTNET = True
+        self._config.BYBIT_ENV = "mainnet"
         nertzh.BybitV5Client = DummyBybitClient
         engine = nertzh.NertzMetalEngine()
         client = engine._bybit_client()
         assert client is not None
         self.assertIsNotNone(client)
-        self.assertEqual(client.base_url, "https://api-testnet.bybit.com")
+        self.assertEqual(client.base_url, "https://api.bybit.com")
 
 
 class FlujoYOperacionTests(unittest.TestCase):

@@ -51,6 +51,11 @@ from tool_registry import (  # noqa: E402
     resolve_nertzh_path,
     search_tools,
 )
+from intelligence_catalog import (  # noqa: E402
+    compute_prediction_level,
+    full_catalog as intelligence_full_catalog,
+    ORDER_PROFILES_VALIDATED,
+)
 from optimizer import (  # noqa: E402
     DEFAULT_COMBINED_WEIGHTS,
     CombinedWeights,
@@ -600,18 +605,28 @@ def _chat_html() -> str:
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <style>
     :root{
-      --bg:#060a14;--surface:#0d1424;--surface2:#111b30;--border:rgba(99,130,191,.18);
-      --text:#e8edf7;--muted:#8b9cc7;--accent:#3d8bfd;--accent2:#00d4aa;
-      --warn:#f5a623;--danger:#ff5c6a;--ok:#2dd4a0;--glow:rgba(61,139,253,.15);
+      --bg:#000000;--surface:#0a0a0a;--surface2:#111111;--border:rgba(255,255,255,.08);
+      --text:#f5f5f5;--muted:#8a8a8a;--accent:#f7a600;--accent2:#20b26c;
+      --warn:#f7a600;--danger:#ef454a;--ok:#20b26c;--glow:rgba(247,166,0,.12);
     }
     *{box-sizing:border-box}
     body{margin:0;font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
     .app{display:grid;grid-template-rows:auto 1fr;min-height:100vh}
     header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;
-      background:linear-gradient(180deg,#0a1020,#060a14);border-bottom:1px solid var(--border)}
+      background:linear-gradient(180deg,#111,#000);border-bottom:1px solid var(--border)}
     .brand{display:flex;align-items:center;gap:12px}
-    .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));
-      display:grid;place-items:center;font-weight:700;font-size:14px;color:#041018}
+    .logo{width:36px;height:36px;border-radius:8px;background:var(--accent);
+      display:grid;place-items:center;font-weight:700;font-size:14px;color:#000}
+    .level-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;
+      font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;border:1px solid var(--border)}
+    .level-badge.L0{color:var(--muted)} .level-badge.L1{color:#9ca3af}
+    .level-badge.L2{color:var(--warn);border-color:rgba(247,166,0,.35)}
+    .level-badge.L3{color:var(--ok);border-color:rgba(32,178,108,.35)}
+    .level-badge.L4{color:#fff;background:linear-gradient(135deg,rgba(247,166,0,.25),rgba(32,178,108,.2));border-color:var(--accent)}
+    .conf-bar{height:4px;border-radius:2px;background:#1a1a1a;margin-top:8px;overflow:hidden}
+    .conf-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .4s}
+    .profile-chip{font-size:10px;padding:4px 8px;border-radius:6px;background:#141414;border:1px solid var(--border);
+      color:var(--muted);margin:4px 4px 0 0;display:inline-block;font-family:'JetBrains Mono',monospace}
     .brand h1{margin:0;font-size:17px;font-weight:700;letter-spacing:.02em}
     .brand span{display:block;font-size:11px;color:var(--muted);font-weight:500}
     .status-pills{display:flex;gap:8px;flex-wrap:wrap}
@@ -668,9 +683,10 @@ def _chat_html() -> str:
   <header>
     <div class="brand">
       <div class="logo">NT</div>
-      <div><h1>NerT AI PRO</h1><span>Autonomous Quant Agent · Bybit</span></div>
+      <div><h1>NerT AI PRO</h1><span>Quant Agent v5 · Bybit Spot · Qwen</span></div>
     </div>
     <div class="status-pills">
+      <div class="pill" id="pill-level">L? …</div>
       <div class="pill" id="pill-llm">LLM …</div>
       <div class="pill" id="pill-bot">Bot …</div>
       <div class="pill" id="pill-ml">ML …</div>
@@ -709,11 +725,20 @@ def _chat_html() -> str:
         <div class="metric"><span class="k">Volume 24h</span><span class="v" id="m-vol">—</span></div>
         <div class="metric"><span class="k">Funding</span><span class="v" id="m-fund">—</span></div>
       </div>
+      <div class="panel-h">Nivel de Predicción</div>
+      <div class="card" id="pred-card">
+        <div class="level-badge L0" id="pred-badge">L0 — …</div>
+        <div class="conf-bar"><div class="conf-fill" id="pred-conf" style="width:0%"></div></div>
+        <div class="metric" style="margin-top:10px"><span class="k">Confianza</span><span class="v" id="pred-pct">—</span></div>
+        <div class="metric"><span class="k">Acción</span><span class="v" id="pred-action" style="font-size:11px;max-width:180px;text-align:right">—</span></div>
+        <div style="margin-top:8px"><span class="k" style="font-size:10px;color:var(--muted)">Perfiles</span>
+          <div id="pred-profiles"></div></div>
+      </div>
       <div class="panel-h">Señal Live (motor)</div>
       <div class="card" id="signal-card">
         <div class="metric"><span class="k">Decision</span><span class="v" id="sig-dec">—</span></div>
         <div class="metric"><span class="k">Combined</span><span class="v" id="sig-comb">—</span></div>
-        <div class="metric"><span class="k">Mom</span><span class="v" id="sig-mom">—</span></div>
+        <div class="metric"><span class="k">Mom / TFI</span><span class="v" id="sig-mom">—</span></div>
         <div class="metric"><span class="k">EGM / PIO</span><span class="v" id="sig-egm">—</span></div>
         <div class="metric"><span class="k">Motor</span><span class="v" id="sig-bot">—</span></div>
         <div class="metric"><span class="k">Bloqueo</span><span class="v" id="sig-block" style="font-size:11px">—</span></div>
@@ -727,7 +752,7 @@ def _chat_html() -> str:
       </div>
     </aside>
   </main>
-  <footer>API: <code>/api</code> · Agent: <code>/agent/chat</code> · Docs: <code>/docs</code></footer>
+  <footer>API v5 · <a href="https://nerthzbyt.github.io/Restructured/" target="_blank" style="color:var(--accent)">Documentación</a> · <code>/agent/catalog</code> · <code>/docs</code></footer>
 </div>
 <script>
 const feed = document.getElementById('feed');
@@ -906,6 +931,23 @@ async function refreshSignals() {
     const pillBot = document.getElementById('pill-bot');
     pillBot.textContent = motor === 'LOOP ON' ? 'Motor ON' : (motor === 'WS' ? 'Motor WS' : 'Motor OFF');
     pillBot.className = 'pill ' + (motor === 'LOOP ON' ? 'ok' : motor === 'WS' ? 'warn' : '');
+    const pred = live.prediction_level || {};
+    const lvl = pred.level || 'L0';
+    const badge = document.getElementById('pred-badge');
+    badge.textContent = lvl + ' — ' + (pred.name || 'Sin señal');
+    badge.className = 'level-badge ' + lvl;
+    const conf = pred.confidence_pct || 0;
+    document.getElementById('pred-pct').textContent = conf + '%';
+    document.getElementById('pred-conf').style.width = conf + '%';
+    document.getElementById('pred-action').textContent = (pred.action || '—').slice(0, 80);
+    const profs = (pred.recommended_profiles || []).map(p => '<span class="profile-chip">'+p+'</span>').join('');
+    document.getElementById('pred-profiles').innerHTML = profs || '<span class="profile-chip">—</span>';
+    const pillLvl = document.getElementById('pill-level');
+    pillLvl.textContent = lvl + ' ' + conf + '%';
+    pillLvl.className = 'pill ' + (lvl === 'L4' || lvl === 'L3' ? 'ok' : lvl === 'L2' ? 'warn' : '');
+    const tfi = det.tfi != null ? Number(det.tfi).toFixed(3) : '—';
+    const mom = det.mom != null ? Number(det.mom).toFixed(4) : '—';
+    document.getElementById('sig-mom').textContent = mom + ' / ' + tfi;
   } catch (_) {}
 }
 
@@ -2661,10 +2703,91 @@ async def agent_tools(
 @app.get("/agent/context")
 async def agent_context(symbol: Optional[str] = "BTCUSDT"):
     sym = str(symbol or "BTCUSDT").strip().upper()
+    metrics: Dict[str, Any] = {}
+    prediction: Dict[str, Any] = {}
+    try:
+        if hasattr(nertzh.bot, "ticker_data"):
+            td = nertzh.bot.ticker_data.get(sym) or {}
+            metrics = td.get("metrics") if isinstance(td.get("metrics"), dict) else {}
+        buy_th = float(getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 6.0) or 6.0)
+        sell_th = float(getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -6.0) or -6.0)
+        hold_band = float(getattr(nertzh.config, "COMBINED_HOLD_BAND", 3.0) or 3.0)
+        prediction = compute_prediction_level(
+            metrics,
+            buy_th=buy_th,
+            sell_th=sell_th,
+            hold_band=hold_band,
+        )
+    except Exception:
+        prediction = {"level": "L0", "name": "Sin señal", "confidence_pct": 0}
     return {
         **project_context_snapshot(),
         "bot_live_state": bot_live_state_snapshot(symbol=sym),
         "registry": registry_stats(),
+        "metrics_live": metrics,
+        "prediction_level": prediction,
+        "order_profiles_validated": ORDER_PROFILES_VALIDATED,
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+@app.get("/agent/catalog")
+async def agent_catalog():
+    return {
+        "ok": True,
+        "catalog": intelligence_full_catalog(),
+        "docs_url": "https://nerthzbyt.github.io/Restructured/",
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+@app.get("/agent/prediction-level/{symbol}")
+async def agent_prediction_level(symbol: str):
+    sym = str(symbol or "BTCUSDT").strip().upper()
+    metrics: Dict[str, Any] = {}
+    if hasattr(nertzh.bot, "ticker_data"):
+        td = nertzh.bot.ticker_data.get(sym) or {}
+        metrics = td.get("metrics") if isinstance(td.get("metrics"), dict) else {}
+    buy_th = float(getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 6.0) or 6.0)
+    sell_th = float(getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -6.0) or -6.0)
+    hold_band = float(getattr(nertzh.config, "COMBINED_HOLD_BAND", 3.0) or 3.0)
+    ml_enabled = bool(getattr(nertzh.config, "ML_ENABLED", False))
+    p_buy = (
+        nertzh.bot.ml_predict_proba(symbol=sym, action="buy", metrics=metrics)
+        if ml_enabled
+        else None
+    )
+    p_sell = (
+        nertzh.bot.ml_predict_proba(symbol=sym, action="sell", metrics=metrics)
+        if ml_enabled
+        else None
+    )
+    level = compute_prediction_level(
+        metrics,
+        buy_th=buy_th,
+        sell_th=sell_th,
+        hold_band=hold_band,
+        ml_p_buy=p_buy,
+        ml_p_sell=p_sell,
+    )
+    return {
+        "ok": True,
+        "symbol": sym,
+        "metrics": metrics,
+        "prediction": level,
+        "ml": {"enabled": ml_enabled, "p_buy": p_buy, "p_sell": p_sell},
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+@app.get("/agent/order-profiles")
+async def agent_order_profiles():
+    sweep_cat = intelligence_full_catalog().get("validation_summary")
+    return {
+        "ok": True,
+        "profiles": ORDER_PROFILES_VALIDATED,
+        "validation_summary": sweep_cat,
+        "bybit_docs": "https://bybit-exchange.github.io/docs/v5/order/create-order",
         "timestamp": int(time.time() * 1000),
     }
 

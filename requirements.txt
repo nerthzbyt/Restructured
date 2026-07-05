@@ -9,3 +9,5 @@ websockets
 
 typing
 pydantic
+duckdb>=1.0
+duckdb

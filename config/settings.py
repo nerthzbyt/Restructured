@@ -30,8 +30,15 @@ class ConfigSettings:
             # Load variables from environment
             self.BYBIT_API_KEY = self._get_env("BYBIT_API_KEY")
             self.BYBIT_API_SECRET = self._get_env("BYBIT_API_SECRET")
-            self.BYBIT_ENV = str(self._get_env("BYBIT_ENV", "") or "").strip().lower()
-            self.USE_TESTNET = self._get_env_bool("USE_TESTNET", default=True)
+            env_raw = str(self._get_env("BYBIT_ENV", "mainnet") or "").strip().lower()
+            if env_raw in {"", "mainnet"}:
+                self.BYBIT_ENV = "mainnet"
+            elif env_raw == "demo":
+                self.BYBIT_ENV = "demo"
+            else:
+                raise ValueError(
+                    f"BYBIT_ENV inválido: {env_raw!r}. Valores permitidos: demo, mainnet"
+                )
             at = str(self._get_env("BYBIT_ACCOUNT_TYPE", "UNIFIED") or "UNIFIED").strip().upper()
             if at not in self.__class__.VALID_BYBIT_ACCOUNT_TYPES:
                 logger.warning(f"Invalid BYBIT_ACCOUNT_TYPE: {at}. Using default 'UNIFIED'.")
@@ -46,18 +53,6 @@ class ConfigSettings:
             self.LIVE_TRADING_ENABLED = self._get_env_bool(
                 "LIVE_TRADING_ENABLED", default=False
             )
-            self.ALLOW_TESTNET_LIVE = self._get_env_bool(
-                "ALLOW_TESTNET_LIVE", default=False
-            )
-            if (
-                self.LIVE_TRADING_ENABLED
-                and self.USE_TESTNET
-                and not self.ALLOW_TESTNET_LIVE
-            ):
-                raise ValueError(
-                    "LIVE_TRADING_ENABLED=True no puede usarse con USE_TESTNET=True"
-                )
-
             # Validated and defaulted attributes
             self.SYMBOL = self._get_env_symbols(
                 "SYMBOL", "BTCUSDT", self.__class__.VALID_SYMBOLS
@@ -327,5 +322,5 @@ class ConfigSettings:
         )
         api_key_status = "SET" if self.BYBIT_API_KEY else "NOT_SET"
         logger.info(
-            f"  - BYBIT_ENV: {self.BYBIT_ENV or 'default'}, USE_TESTNET: {self.USE_TESTNET}, LIVE_TRADING_ENABLED: {self.LIVE_TRADING_ENABLED}, BYBIT_API_KEY: {api_key_status}"
+            f"  - BYBIT_ENV: {self.BYBIT_ENV}, LIVE_TRADING_ENABLED: {self.LIVE_TRADING_ENABLED}, BYBIT_API_KEY: {api_key_status}"
         )

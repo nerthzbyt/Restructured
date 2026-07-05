@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nertz_engine"
+version = "0.1.0"
+description = "Nertz trading engine"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp",
+    "numpy",
+    "optuna",
+    "uvicorn",
+    "python-dotenv",
+    "fastapi",
+    "SQLAlchemy",
+    "websockets",
+    "typing",
+    "pydantic",
+    "duckdb>=1.0",
+]
+
+[project.scripts]
+nertz = "nertz_engine.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nertz_engine*"]

@@ -16,38 +16,14 @@ http://127.0.0.1:8787/api
 
 Si cambias host o puerto, usa ese mismo valor en los ejemplos.
 
-## Selección de red: demo, testnet y mainnet
+## Selección de red: demo y mainnet
 
-La red se controla con variables del .env y la lógica de configuración:
+La red se controla con `BYBIT_ENV` en el `.env`:
 
-- BYBIT_ENV
-  - Si BYBIT_ENV=demo, el cliente autenticado usa https://api-demo.bybit.com.
-  - Si BYBIT_ENV no es demo, el cliente autenticado usa mainnet o testnet según USE_TESTNET.
-- USE_TESTNET
-  - true: usa https://api-testnet.bybit.com y websocket de testnet para datos públicos.
-  - false: usa https://api.bybit.com y websocket de mainnet para datos públicos.
-- LIVE_TRADING_ENABLED
-  - true: habilita operaciones reales y balance real.
-  - false: deshabilita órdenes reales y el balance es simulado.
-- ALLOW_TESTNET_LIVE
-  - true: permite LIVE_TRADING_ENABLED con USE_TESTNET=true.
-  - false: impide LIVE_TRADING_ENABLED si USE_TESTNET=true.
-
-Combinaciones recomendadas:
-
-- Demo
-  - BYBIT_ENV=demo
-  - USE_TESTNET=false
-  - LIVE_TRADING_ENABLED=true
-- Testnet
-  - BYBIT_ENV=
-  - USE_TESTNET=true
-  - LIVE_TRADING_ENABLED=true
-  - ALLOW_TESTNET_LIVE=true
-- Mainnet
-  - BYBIT_ENV=
-  - USE_TESTNET=false
-  - LIVE_TRADING_ENABLED=true
+- `BYBIT_ENV=demo` — órdenes autenticadas en `https://api-demo.bybit.com` (demo trading de mainnet).
+- `BYBIT_ENV=mainnet` (o vacío) — órdenes autenticadas en `https://api.bybit.com`.
+- Datos públicos (REST + WebSocket) siempre usan mainnet: `api.bybit.com` / `stream.bybit.com`.
+- `LIVE_TRADING_ENABLED=true` habilita órdenes y balance real; `false` deshabilita trading live.
 
 ## Variables .env (todas las configuraciones disponibles)
 
@@ -57,10 +33,8 @@ Estas variables se leen desde el archivo .env y tienen validación interna.
 | --- | --- | --- |
 | BYBIT_API_KEY | (vacío) | API key de Bybit para autenticación. |
 | BYBIT_API_SECRET | (vacío) | API secret de Bybit para autenticación. |
-| BYBIT_ENV | "" | Red especial. Si es "demo", usa api-demo para operaciones autenticadas. |
-| USE_TESTNET | true | true/false. Selecciona testnet para datos públicos y, si no es demo, para autenticación. |
+| BYBIT_ENV | mainnet | `demo` o `mainnet`. Controla la API autenticada (demo vs mainnet). |
 | LIVE_TRADING_ENABLED | false | true/false. Habilita órdenes reales y balance real. |
-| ALLOW_TESTNET_LIVE | false | true/false. Permite LIVE_TRADING_ENABLED con USE_TESTNET=true. |
 | SYMBOL | BTCUSDT | Valores válidos: BTCUSDT, ETHUSDT, XRPUSDT. Admite lista separada por comas. |
 | TIMEFRAME | 1m | Valores válidos: 1m, 5m, 15m, 1h, 4h, 1d. |
 | ORDER_TYPE | Limit | Valores válidos: Limit, Market (case-insensitive). |

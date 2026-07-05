@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>NerT API v5 — Documentación</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="assets/style.css"/>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">NerT Quant</div>
+    <div class="ver">API Reference v5.0.0</div>
+    <nav class="nav">
+      <div class="nav-group">General</div>
+      <a href="#intro" class="active">Introducción</a>
+      <a href="#architecture">Arquitectura</a>
+      <a href="#quickstart">Inicio rápido</a>
+      <div class="nav-group">Métricas</div>
+      <a href="#indicators">Indicadores</a>
+      <a href="#combined">Señal Combined</a>
+      <a href="#prediction">Niveles L0–L4</a>
+      <div class="nav-group">Trading</div>
+      <a href="#orders">Perfiles de orden</a>
+      <a href="#validation">Datos validados</a>
+      <div class="nav-group">Agent</div>
+      <a href="#agent-api">API Agent</a>
+      <a href="#qwen">Integración Qwen</a>
+      <a href="#roadmap">Roadmap</a>
+    </nav>
+  </aside>
+  <main class="content">
+    <span class="badge">v5.0.0</span><span class="badge ok">Bybit Spot</span>
+    <h1 id="intro">NerT Quant Engine</h1>
+    <p class="lead">Documentación de referencia estilo Bybit V5 para el motor cuantitativo Restructured: indicadores propios, niveles de predicción calibrados con datos de exchange y agente autónomo con Qwen.</p>
+
+    <h2 id="architecture">Arquitectura</h2>
+    <pre>┌──────────────────────────────────────────┐
+│ NerT_AI_PRO  FastAPI :8787              │
+│  · ReAct Agent  · Qwen LLM  · MCP       │
+├──────────────────────────────────────────┤
+│ src/Nertzh.py  Motor + WS Bybit v5      │
+│  · utils.py (métricas)  · optimizer.py  │
+├──────────────────────────────────────────┤
+│ Bybit REST / WebSocket (Spot)           │
+└──────────────────────────────────────────┘</pre>
+
+    <h2 id="quickstart">Inicio rápido</h2>
+    <pre>git clone https://github.com/nerthzbyt/Restructured.git
+cd Restructured && pip install -r requirements.txt
+python NerT_AI_PRO/main.py
+# → http://127.0.0.1:8787</pre>
+
+    <h2 id="indicators">Indicadores propios</h2>
+    <p>Todos los indicadores usan normalización <strong>Welford z-score</strong> con ventana mínima de 5 muestras antes de calibración completa.</p>
+    <table>
+      <thead><tr><th>ID</th><th>Nombre</th><th>Peso</th><th>Categoría</th><th>Descripción</th></tr></thead>
+      <tbody>
+        <tr><td><code>pio</code></td><td>Pressure Imbalance Orderbook</td><td>0.25</td><td>Microestructura</td><td>Presión bid/ask ponderada por distancia al mid (exp decay)</td></tr>
+        <tr><td><code>egm</code></td><td>Enhanced Gravity Metric</td><td>0.30</td><td>Microestructura</td><td>PIO + asimetría + bonus ROL. Filtro direccional principal</td></tr>
+        <tr><td><code>ild</code></td><td>Implied Liquidity Depth</td><td>-0.15</td><td>Liquidez</td><td>Coste notional para mover ±target_move. Peso negativo</td></tr>
+        <tr><td><code>rol</code></td><td>Rate of Liquidity</td><td>0.10</td><td>Microestructura</td><td>Δ liquidez / Δt — absorción o retirada rápida</td></tr>
+        <tr><td><code>ogm</code></td><td>Order Gap Metric</td><td>0.05</td><td>Microestructura</td><td>Gaps grandes vs medianos en el libro</td></tr>
+        <tr><td><code>tfi</code></td><td>Trade Flow Imbalance</td><td>0.25</td><td>Flujo</td><td>Desequilibrio qty en últimos 10 trades</td></tr>
+        <tr><td><code>mom</code></td><td>Momentum Composite</td><td>0.16</td><td>Momentum</td><td>EMA5/20 + retornos multi-timeframe</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="combined">Señal Combined</h2>
+    <pre>combined = scale × (w_pio·pio_z + w_egm·egm_z + w_ild·ild_z
+           + w_rol·rol_z + w_ogm·ogm_z + w_tfi·tfi_z + w_mom·mom_z)
+
+# Defaults: scale=10, buy_th=6.0, sell_th=-6.0, hold_band=3.0
+# Optimizable vía POST /agent/optimize (Optuna)</pre>
+
+    <h2 id="prediction">Niveles de predicción L0–L4</h2>
+    <div class="card-grid">
+      <div class="card"><div class="level L0">L0</div><h3>Sin señal</h3><p>0% — Sin calibración o data_ok=false. No operar.</p></div>
+      <div class="card"><div class="level">L1</div><h3>Observación</h3><p>25% — Calibrado, |combined| &lt; hold_band. Limit preferido.</p></div>
+      <div class="card"><div class="level L2">L2</div><h3>Direccional débil</h3><p>50% — Señal parcial, veto EGM o ML &lt; 0.55.</p></div>
+      <div class="card"><div class="level L3">L3</div><h3>Accionable</h3><p>75% — Umbrales + EGM OK. Market+IOC validado.</p></div>
+      <div class="card"><div class="level L4">L4</div><h3>Alta convicción</h3><p>92% — Composite ≥85.6, execution ≥90. Prioridad máxima.</p></div>
+    </div>
+    <div class="endpoint"><span class="method get">GET</span><code>/agent/prediction-level/{symbol}</code></div>
+
+    <h2 id="orders">Perfiles de orden validados</h2>
+    <table>
+      <thead><tr><th>Rank</th><th>Perfil</th><th>Exchange %</th><th>Score</th><th>Uso</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><code>Market|IOC|baseCoin</code></td><td>86.8%</td><td>85.62</td><td>Entrada/salida L3-L4 spot</td></tr>
+        <tr><td>2</td><td><code>Limit|GTC</code></td><td>12.8%</td><td>82.0</td><td>Maker en rangos L1-L2</td></tr>
+        <tr><td>3</td><td><code>Limit|PostOnly</code></td><td>0.2%</td><td>74.0</td><td>Spread tight, fee maker</td></tr>
+      </tbody>
+    </table>
+    <div class="endpoint"><span class="method get">GET</span><code>/agent/order-profiles</code></div>
+
+    <h2 id="validation">Datos validados (2026-07-04)</h2>
+    <ul style="color:#d4d4d4;margin:0 0 20px 20px">
+      <li>Símbolo: <strong>BTCUSDT</strong> · Fuente: Bybit exchange API (n=500 órdenes)</li>
+      <li>Sweep: <strong>29,184</strong> combinaciones · 304 perfiles × 48 params</li>
+      <li>Live demo: fill OK · slippage <strong>2.16 bps</strong> · latencia ~2s</li>
+      <li>Top R:R validado: TP 0.2% / SL 0.15% (1.33:1)</li>
+    </ul>
+
+    <h2 id="agent-api">API Agent</h2>
+    <div class="endpoint"><span class="method get">GET</span><code>/agent/catalog</code><span style="color:var(--muted);font-size:12px"> — Catálogo completo</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/agent/context?symbol=BTCUSDT</code><span style="color:var(--muted);font-size:12px"> — Estado + predicción</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/agent/chat</code><span style="color:var(--muted);font-size:12px"> — Agente ReAct autónomo</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/agent/optimize</code><span style="color:var(--muted);font-size:12px"> — Optuna thresholds</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/agent/llm/status</code><span style="color:var(--muted);font-size:12px"> — Estado Qwen</span></div>
+    <div class="endpoint"><span class="method post">POST</span><code>/predict/{symbol}</code><span style="color:var(--muted);font-size:12px"> — Decisión + ML</span></div>
+
+    <h3>Ejemplo: prediction-level</h3>
+    <pre>GET /agent/prediction-level/BTCUSDT
+
+{
+  "ok": true,
+  "symbol": "BTCUSDT",
+  "prediction": {
+    "level": "L3",
+    "name": "Accionable",
+    "confidence_pct": 75,
+    "combined": 7.42,
+    "recommended_profiles": ["Market|IOC|baseCoin|Order"]
+  }
+}</pre>
+
+    <h2 id="qwen">Integración Qwen</h2>
+    <table>
+      <thead><tr><th>Backend</th><th>Modelos</th><th>Auth</th><th>Uso</th></tr></thead>
+      <tbody>
+        <tr><td><code>qwen_desktop</code></td><td>qwen3.7-plus, qwen3.7-max</td><td>JWT Qwen Desktop</td><td>ReAct, estrategia, diagnóstico</td></tr>
+        <tr><td><code>openai_compat</code></td><td>qwen-plus-latest</td><td>DASHSCOPE_API_KEY</td><td>Producción cloud</td></tr>
+        <tr><td><code>ollama</code></td><td>qwen2.5-coder:latest</td><td>Local</td><td>Fallback offline</td></tr>
+      </tbody>
+    </table>
+    <pre>LLM_BACKEND=qwen_desktop
+# Abrir Qwen Desktop e iniciar sesión (Google)
+GET /agent/llm/status → qwen_desktop.token_present: true</pre>
+
+    <h2 id="roadmap">Usos futuros</h2>
+    <table>
+      <thead><tr><th>Fase</th><th>Item</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td>Q3 2026</td><td>Factorización Nertzh → nertz_engine (-70% LOC)</td><td>planned</td></tr>
+        <tr><td>Q3 2026</td><td>API pública v5 REST + WebSocket unificados</td><td>in_progress</td></tr>
+        <tr><td>Q4 2026</td><td>ML ensemble XGBoost + calibración isotónica</td><td>planned</td></tr>
+        <tr><td>Q4 2026</td><td>Multi-exchange (Bybit + Binance)</td><td>planned</td></tr>
+        <tr><td>2027</td><td>Agente autónomo con memoria episódica</td><td>research</td></tr>
+      </tbody>
+    </table>
+
+    <footer class="doc-footer">
+      NerT Quant Engine · <a href="https://github.com/nerthzbyt/Restructured">GitHub</a> ·
+      Inspirado en <a href="https://bybit-exchange.github.io/docs/v5/intro">Bybit API v5</a>
+    </footer>
+  </main>
+</div>
+<script>
+document.querySelectorAll('.nav a').forEach(a => {
+  a.addEventListener('click', () => {
+    document.querySelectorAll('.nav a').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

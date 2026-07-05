@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.pyc
+*.pyo
 
 # Databases
 *.db
@@ -14,12 +15,37 @@ logs/
 
 # Environment variables
 .env*
+!.env.example
 
-# IDE files
+# IDE / tooling
 .idea/
+.pytest_cache/
+.history/
+.agents/
+.ai/
+.grok/
+.vendor/
+
+# Virtual environments
+.venv/
+venv/
 
 # Large data/model files
 xgboost_model.joblib
+src_dev/output/bybit_mcp_parts/
+src_dev/output/*.json
+!src_dev/output/full_system_sweep_summary.json
 
-# history
-.history/
+# Build artifacts
+nertz_engine.egg-info/
+*.egg-info/
+dist/
+build/
+
+# MCP local configs (user-specific)
+mcps/
+NerT_AI_PRO/agent_memory.sqlite
+
+# Temp
+temp_*.txt
+package-lock.json
