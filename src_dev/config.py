@@ -207,5 +207,13 @@ class DevSettings:
     def signal_lab_model_path(self) -> str:
         return os.path.join(OUTPUT_DIR, "signal_lab_ml_model.json")
 
+    @property
+    def monitor_incidents_path(self) -> str:
+        return os.path.join(OUTPUT_DIR, "monitor_incidents.jsonl")
+
+    @property
+    def monitor_status_path(self) -> str:
+        return os.path.join(OUTPUT_DIR, "monitor_session_summary.json")
+
 
 DEFAULT_SETTINGS = DevSettings.from_env()

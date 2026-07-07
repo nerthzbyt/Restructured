@@ -408,40 +408,86 @@ def _parse_wallet_balance_payload(payload: Dict[str, Any], coin: Optional[str] =
     }
 
 
+def _balance_snapshot_is_live(snap: BalanceSnapshot) -> bool:
+    raw = getattr(snap, "raw", None)
+    if not isinstance(raw, dict):
+        return True
+    mode = str(raw.get("mode") or "").strip().lower()
+    if mode in {"disabled", "simulated"}:
+        return False
+    ret_code = raw.get("retCode")
+    if ret_code is not None and ret_code not in (0, "0"):
+        return False
+    return True
+
+
 def _latest_valid_balance (db: Session) -> Optional[BalanceSnapshot]:
-    return (
+    rows = (
         db.query (BalanceSnapshot)
         .filter (or_ (BalanceSnapshot.total_equity > 0.0, BalanceSnapshot.available_balance > 0.0))
         .order_by (BalanceSnapshot.timestamp.desc ())
-        .first ()
+        .limit (100)
+        .all ()
     )
+    for row in rows:
+        if _balance_snapshot_is_live (row):
+            return row
+    return rows[0] if rows else None
+
+
+def _first_live_balance_equity_from_events(events: Any) -> Optional[float]:
+    if not isinstance(events, list):
+        return None
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") != "balance":
+            continue
+        if str(ev.get("mode") or "").lower() in {"disabled", "simulated"}:
+            continue
+        if ev.get("retCode") not in (None, 0, "0"):
+            continue
+        try:
+            te = float(ev.get("total_equity") or 0.0)
+        except (TypeError, ValueError):
+            te = 0.0
+        if te > 0.0:
+            return te
+    return None
 
 
 def _resolve_capital_inicial(prev_initial: Any, prev_source: Any, capital_source: str, capital_actual: float) -> float:
     try:
-        cfg_capital = float(config.CAPITAL_USDT)
+        capital_actual_f = float(capital_actual)
     except Exception:
-        cfg_capital = 0.0
-
-    if cfg_capital > 0:
-        return cfg_capital
+        capital_actual_f = 0.0
 
     try:
         prev_initial_f = float(prev_initial)
     except Exception:
         prev_initial_f = 0.0
 
-    if prev_initial_f > 0:
-        return prev_initial_f
+    prev_src = str(prev_source or "").strip().lower()
 
     try:
-        capital_actual_f = float(capital_actual)
+        cfg_capital = float(config.CAPITAL_USDT)
     except Exception:
-        capital_actual_f = 0.0
+        cfg_capital = 0.0
 
     if capital_source == "bybit_wallet_balance" and capital_actual_f > 0:
+        if prev_initial_f > 0 and prev_src == "bybit_wallet_balance":
+            return prev_initial_f
+        if prev_initial_f > 0 and prev_src in {"simulated", "disabled", ""}:
+            if cfg_capital > 0 and abs(prev_initial_f - cfg_capital) < 1e-6:
+                return capital_actual_f
+        if prev_initial_f > 0 and cfg_capital > 0 and abs(prev_initial_f - cfg_capital) < 1e-6:
+            return capital_actual_f
+        if prev_initial_f > 0:
+            return prev_initial_f
         return capital_actual_f
 
+    if cfg_capital > 0:
+        return cfg_capital
+    if prev_initial_f > 0:
+        return prev_initial_f
     return 0.0
 
 
@@ -3889,6 +3935,9 @@ class NertzMetalEngine:
     def _bybit_client (self) -> Optional[BybitV5Client]:
         if not bool (getattr (config, "LIVE_TRADING_ENABLED", False)):
             return None
+        return self._bybit_client_for_balance ()
+
+    def _bybit_client_for_balance (self) -> Optional[BybitV5Client]:
         if not config.BYBIT_API_KEY or not config.BYBIT_API_SECRET:
             return None
         if self._bybit is not None:
@@ -3901,36 +3950,59 @@ class NertzMetalEngine:
         self._bybit = BybitV5Client (config.BYBIT_API_KEY, config.BYBIT_API_SECRET, base_url=base_url)
         return self._bybit
 
+    async def _record_simulated_balance (
+            self,
+            *,
+            account_type: str,
+            coin: Optional[str],
+            reason: str,
+    ) -> Dict[str, Any]:
+        try:
+            total_equity = float (self.capital or config.CAPITAL_USDT or 0.0)
+        except Exception:
+            total_equity = 0.0
+        available_balance = total_equity
+        payload = {
+            "mode": "simulated",
+            "reason": reason,
+            "coin": coin,
+            "accountType": account_type,
+        }
+        with SessionLocal () as db:
+            snap = BalanceSnapshot (
+                timestamp=datetime.now (timezone.utc),
+                account_type=account_type,
+                coin=coin,
+                total_equity=total_equity,
+                available_balance=available_balance,
+                raw=payload,
+            )
+            db.add (snap)
+            db.commit ()
+        log_dir = os.path.join (os.path.dirname (__file__), '..', 'logs')
+        bal_body = {
+            "account_type": account_type,
+            "coin": coin,
+            "total_equity": total_equity,
+            "available_balance": available_balance,
+            "mode": payload.get ("mode"),
+            "reason": reason,
+        }
+        append_results_event ({"type": "balance", **bal_body}, log_dir=log_dir)
+        update_last_balance (bal_body, log_dir=log_dir)
+        return {
+            "success": True,
+            "balance": {"total_equity": total_equity, "available_balance": available_balance},
+            "raw": payload,
+        }
+
     async def record_balance (self, account_type: str = "UNIFIED", coin: Optional[str] = "USDT") -> Dict[str, Any]:
-        if not bool (getattr (config, "LIVE_TRADING_ENABLED", False)):
-            total_equity = float (self.capital or 0.0)
-            available_balance = float (self.capital or 0.0)
-            payload = {"mode": "disabled", "coin": coin, "accountType": account_type}
-            with SessionLocal () as db:
-                snap = BalanceSnapshot (
-                    timestamp=datetime.now (timezone.utc),
-                    account_type=account_type,
-                    coin=coin,
-                    total_equity=total_equity,
-                    available_balance=available_balance,
-                    raw=payload,
-                )
-                db.add (snap)
-                db.commit ()
-            log_dir = os.path.join (os.path.dirname (__file__), '..', 'logs')
-            bal_body = {
-                "account_type": account_type,
-                "coin": coin,
-                "total_equity": total_equity,
-                "available_balance": available_balance,
-                "mode": payload.get ("mode"),
-            }
-            append_results_event ({"type": "balance", **bal_body}, log_dir=log_dir)
-            update_last_balance (bal_body, log_dir=log_dir)
-            return {"success": True, "balance": {"total_equity": total_equity, "available_balance": available_balance},
-                    "raw": payload}
-        client = self._bybit_client ()
+        client = self._bybit_client_for_balance ()
         if client is None:
+            if not bool (getattr (config, "LIVE_TRADING_ENABLED", False)):
+                return await self._record_simulated_balance (
+                    account_type=account_type, coin=coin, reason="no_bybit_credentials"
+                )
             return {"success": False, "message": "Credenciales BYBIT_API_KEY/BYBIT_API_SECRET no configuradas"}
 
         resolved_account_type = account_type
@@ -4191,6 +4263,16 @@ class NertzMetalEngine:
                 "total_equity": float (latest_balance.total_equity or 0.0),
                 "available_balance": float (latest_balance.available_balance or 0.0),
             }
+
+        events_prev = previous.get ("events")
+        if (
+            capital_source == "bybit_wallet_balance"
+            and (not prev_initial or str(prev_source or "").lower() in {"simulated", "disabled", ""})
+        ):
+            wallet_baseline = _first_live_balance_equity_from_events (events_prev)
+            if wallet_baseline and wallet_baseline > 0:
+                prev_initial = wallet_baseline
+                prev_source = "bybit_wallet_balance"
 
         capital_inicial = _resolve_capital_inicial (prev_initial, prev_source, capital_source, capital_actual)
 
@@ -5028,6 +5110,16 @@ async def get_profit (db: Session = Depends (get_db)):
     if latest_balance and (latest_balance.total_equity or 0.0) > 0:
         capital_source = "bybit_wallet_balance"
         capital_actual = float (latest_balance.total_equity)
+
+    events_prev = previous.get ("events")
+    if (
+        capital_source == "bybit_wallet_balance"
+        and (not prev_initial or str(prev_source or "").lower() in {"simulated", "disabled", ""})
+    ):
+        wallet_baseline = _first_live_balance_equity_from_events (events_prev)
+        if wallet_baseline and wallet_baseline > 0:
+            prev_initial = wallet_baseline
+            prev_source = "bybit_wallet_balance"
 
     capital_inicial = _resolve_capital_inicial (prev_initial, prev_source, capital_source, capital_actual)
 
@@ -6033,6 +6125,8 @@ async def main () -> None:
     args = parser.parse_args ()
 
     bot.start_on_boot = not bool (args.api_only)
+    if bool (args.launcher):
+        bot.start_on_boot = False
     if bool (args.auto_hft):
         try:
             setattr (config, "AUTO_HFT_ENABLED", True)
