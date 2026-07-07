@@ -2918,6 +2918,8 @@ async def agent_catalog():
         "ok": True,
         "catalog": intelligence_full_catalog(),
         "docs_url": "/project-docs/",
+        "docs_public_url": "https://nerthzbyt.github.io/Restructured/",
+        "docs_note": "Usar docs_url en local; docs_public_url tras deploy GitHub Pages",
         "timestamp": int(time.time() * 1000),
     }
 

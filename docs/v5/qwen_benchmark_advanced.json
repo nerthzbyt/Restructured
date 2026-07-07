@@ -1,0 +1,295 @@
+{
+  "ok": true,
+  "timestamp": "2026-07-07T02:33:14.207524+00:00",
+  "model_requested": "qwen-max-latest",
+  "model_normalized": "qwen3.7-max",
+  "benchmark_version": "2.0_advanced",
+  "qwen_status": {
+    "session_found": true,
+    "api_ok": true,
+    "token_source": "/home/angel/snap/firefox/common/.mozilla/firefox/6vpnc2is.default/storage/default/https+++chat.qwen.ai/ls"
+  },
+  "summary": {
+    "cases": 12,
+    "success_rate": 1.0,
+    "avg_score": 0.467,
+    "avg_latency_s": 23.85,
+    "grade": "C"
+  },
+  "by_category": {
+    "reasoning": 0.467,
+    "math": 0.85,
+    "code": 0.75,
+    "trading": 0.2,
+    "analysis": 0.0,
+    "agent": 0.4
+  },
+  "by_difficulty": {
+    "expert": 0.425,
+    "hard": 0.55
+  },
+  "results": [
+    {
+      "id": "logic_einstein_riddle",
+      "category": "reasoning",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 1.0,
+      "latency_s": 10.22,
+      "chars": 6,
+      "error": null,
+      "details": {
+        "score": 1.0,
+        "answer": "Alemán"
+      },
+      "preview": "Alemán"
+    },
+    {
+      "id": "math_integration_rigorous",
+      "category": "math",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 0.7,
+      "latency_s": 31.79,
+      "chars": 3492,
+      "error": null,
+      "details": {
+        "score": 0.7,
+        "has_polar": true,
+        "has_sqrt_pi": false
+      },
+      "preview": "Claro. A continuación presento la demostración rigurosa y paso a paso de la integral gaussiana:  $$ I = \\int_{0}^{\\infty} e^{-x^2} \\, dx = \\frac{\\sqrt{\\pi}}{2} $$  ### 1) La técnica del cuadrado de la integral  Dado que $e^{-x^2}$ no tiene una primitiva expresable en términos de funciones elementale"
+    },
+    {
+      "id": "math_probability_bayesian",
+      "category": "math",
+      "difficulty": "hard",
+      "ok": true,
+      "score": 1.0,
+      "latency_s": 17.43,
+      "chars": 1300,
+      "error": null,
+      "details": {
+        "score": 1.0,
+        "answer": 0.0875576
+      },
+      "preview": "Para resolver este problema, aplicamos el **Teorema de Bayes**. Primero, definimos los eventos y las probabilidades dadas:  *   $P(E) = 0.01$: Probabilidad de tener la enfermedad (prevalencia). *   $P(\\neg E) = 0.99$: Probabilidad de no tener la enfermedad. *   $P(+|E) = 0.95$: Sensibilidad (probabi"
+    },
+    {
+      "id": "code_lru_cache",
+      "category": "code",
+      "difficulty": "hard",
+      "ok": true,
+      "score": 1.0,
+      "latency_s": 23.09,
+      "chars": 3304,
+      "error": null,
+      "details": {
+        "score": 1.0,
+        "output": "TESTS_PASSED"
+      },
+      "preview": "Aquí tienes una implementación de `LRUCache` en Python optimizada para operaciones O(1), utilizando `OrderedDict` como estructura subyacente. Esta elección es idiomática en Python y ofrece un rendimiento excelente para orquestación, manteniendo la complejidad algorítmica adecuada sin la sobrecarga d"
+    },
+    {
+      "id": "code_algorithm_optimization",
+      "category": "code",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 0.5,
+      "latency_s": 24.63,
+      "chars": 3178,
+      "error": null,
+      "details": {
+        "score": 0.5,
+        "reason": "wrong_output",
+        "expected": "TESTS_PASSED",
+        "got": ""
+      },
+      "preview": "Aquí tienes una solución completa, optimizada y lista para producción que cumple con todos los requisitos solicitados.  ### Solución: Two Sum (O(n) Time / O(n) Space)  ```python from typing import List, Tuple, Optional   def two_sum(nums: List[int], target: int) -> Optional[Tuple[int, int]]:     \"\"\""
+    },
+    {
+      "id": "trading_kelly_advanced",
+      "category": "trading",
+      "difficulty": "hard",
+      "ok": true,
+      "score": 0.2,
+      "latency_s": 24.33,
+      "chars": 2518,
+      "error": null,
+      "details": {
+        "parsed": true,
+        "score": 0.19999999999999996,
+        "missing": [
+          "kelly_basic",
+          "kelly_fractional",
+          "kelly_adjusted",
+          "position_size"
+        ]
+      },
+      "preview": "{   \"kelly_analysis\": {     \"input_parameters\": {       \"win_rate\": 0.58,       \"average_win\": 150,       \"average_loss\": 100,       \"correlation\": 0.15,       \"max_simultaneous_positions\": 3,       \"account_size\": 100000     },     \"step_1_basic_kelly\": {       \"formula\": \"f* = (p * b - q) / b\",   "
+    },
+    {
+      "id": "trading_portfolio_optimization",
+      "category": "trading",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 0.4,
+      "latency_s": 35.35,
+      "chars": 3066,
+      "error": null,
+      "details": {
+        "parsed": true,
+        "score": 0.3999999999999999,
+        "missing": [
+          "weights",
+          "expected_return",
+          "volatility"
+        ]
+      },
+      "preview": "To solve this optimization problem, we need to maximize the Sharpe Ratio subject to the given constraints. Since no risk-free rateTo solve this portfolio was specified, I will assume optimization problem, we need to maximize the a risk-free rate of 0% Sharpe Ratio subject to the given (maximizing th"
+    },
+    {
+      "id": "reasoning_multi_step",
+      "category": "reasoning",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 0.2,
+      "latency_s": 28.0,
+      "chars": 3154,
+      "error": null,
+      "details": {
+        "parsed": true,
+        "score": 0.19999999999999996,
+        "missing": [
+          "alice",
+          "bob",
+          "charlie",
+          "diana"
+        ]
+      },
+      "preview": "{   \"simulation_parameters\": {     \"initial_capital\": 100000,     \"signals\": [6, -3, 8, -7, 2, 9, -6],     \"trade_rules\": {       \"buy_threshold\": \">5\",       \"sell_threshold\": \"<-5\",       \"hold_range\": \"[-5, 5]\"     },     \"assumptions\": {       \"note\": \"El prompt no especifica PnL por trade ni vo"
+    },
+    {
+      "id": "long_context_analysis",
+      "category": "analysis",
+      "difficulty": "hard",
+      "ok": true,
+      "score": 0.0,
+      "latency_s": 12.18,
+      "chars": 701,
+      "error": null,
+      "details": {
+        "parsed": true,
+        "score": 0.0,
+        "missing": [
+          "q1",
+          "q2",
+          "q3",
+          "q4",
+          "q5"
+        ]
+      },
+      "preview": "{   \"1\": \"El modelo de ejecución actual no considera el market impact para órdenes que superan el 1% del volumen diario.\",   \"2\": \"Historical Simulation VaR.\",   \"3\": \"El Profit Factor es 1.92, lo cual indica que por cada dólar perdido se generan $1.92 en ganancias brutas, reflejando una alta eficie"
+    },
+    {
+      "id": "trading_microstructure_deep",
+      "category": "trading",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 0.0,
+      "latency_s": 24.36,
+      "chars": 2735,
+      "error": null,
+      "details": {
+        "parsed": true,
+        "score": 0.0,
+        "missing": [
+          "directional_bias",
+          "liquidity_quality",
+          "spoofing_risk",
+          "recommendation",
+          "optimal_size"
+        ]
+      },
+      "preview": "{   \"analisis_microestructura\": {     \"timestamp_analisis\": \"2026-07-07T00:00:00Z\",     \"par\": \"BTCUSDT\",     \"1_sesgo_direccional\": {       \"direccion\": \"ALCISTA_CORTO_PLAZO\",       \"confianza\": 0.78,       \"justificacion\": \"El order book imbalance de +0.34 combinado con un order flow neto de +2.45"
+    },
+    {
+      "id": "agent_complex_workflow",
+      "category": "agent",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 0.4,
+      "latency_s": 27.21,
+      "chars": 3110,
+      "error": null,
+      "details": {
+        "parsed": true,
+        "score": 0.3999999999999999,
+        "missing": [
+          "steps",
+          "total_steps",
+          "success_criteria"
+        ]
+      },
+      "preview": "{   \"workflow\": [     {       \"step\": 1,       \"action\": \"Obtener datos de mercado\",       \"tool\": \"get_market_data\",       \"parameters\": {         \"symbol\": \"ETHUSDT\",         \"timeframe\": \"1h\"       },       \"success_condition\": \"Retorno de estructura OHLCV válida con al menos 200 velas y sin valo"
+    },
+    {
+      "id": "reasoning_uncertainty",
+      "category": "reasoning",
+      "difficulty": "expert",
+      "ok": true,
+      "score": 0.2,
+      "latency_s": 27.63,
+      "chars": 3565,
+      "error": null,
+      "details": {
+        "parsed": true,
+        "score": 0.19999999999999996,
+        "missing": [
+          "strategy_mix",
+          "capital_allocation",
+          "adjustment_plan",
+          "expected_sharpe"
+        ]
+      },
+      "preview": "{   \"analisis\": {     \"contexto\": \"La predicción del régimen para los próximos 30 días tiene alta incertidumbre (40/30/30). Asignar capital basándose únicamente en el win rate esperado ponderado por régimen es riesgoso. Se debe priorizar la robustez mediante diversificación y aprovechamiento de corr"
+    }
+  ],
+  "market_tier_estimate": {
+    "composite": 0.627,
+    "estimated_tier": "Mid-tier",
+    "peer_models": [
+      "GPT-4o mini",
+      "Mistral Medium",
+      "Qwen3.5-Flash"
+    ],
+    "note": "Estimación basada en benchmark avanzado NerT v2.0"
+  },
+  "asymmetry_analysis": {
+    "strongest_areas": [
+      {
+        "category": "math",
+        "avg_score": 0.85
+      }
+    ],
+    "weakest_areas": [
+      {
+        "category": "reasoning",
+        "avg_score": 0.467
+      },
+      {
+        "category": "trading",
+        "avg_score": 0.2
+      },
+      {
+        "category": "analysis",
+        "avg_score": 0.0
+      },
+      {
+        "category": "agent",
+        "avg_score": 0.4
+      }
+    ],
+    "asymmetry_score": 0.85
+  }
+}

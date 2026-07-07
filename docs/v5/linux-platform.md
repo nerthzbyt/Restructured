@@ -69,3 +69,29 @@ LLM_MODEL=grok-3-mini
 - Signal Lab: 81.7% match decisiones motor vs horizontes dev
 - Fix L0: niveles L1–L4 visibles tras calibración Welford
 - Memoria agente: 16+ eventos en SQLite, restauración UI OK
+- **Live verify:** gate old_results vs exchange — ver [live-verification.md](live-verification.md)
+- **Benchmark Qwen:** grado C, math 0.85 — ver [qwen-benchmark.md](qwen-benchmark.md)
+
+## Documentación pública (GitHub Pages)
+
+| URL | Uso |
+|-----|-----|
+| `http://127.0.0.1:8787/project-docs/` | Siempre disponible con el servidor local |
+| `https://nerthzbyt.github.io/Restructured/` | Sitio estático tras deploy Actions |
+
+El footer del Agent Console apunta a `/project-docs/` (local). Tras push a `main` con cambios en `docs/**`, el workflow `.github/workflows/pages.yml` publica el sitio.
+
+**Si GitHub Pages muestra 404:** activar en repo → Settings → Pages → Source: **GitHub Actions**.
+- **Live verify:** gate old_results vs exchange — ver [live-verification.md](live-verification.md)
+- **Benchmark Qwen:** grado C, math 0.85 — ver [qwen-benchmark.md](qwen-benchmark.md)
+
+## Documentación pública (GitHub Pages)
+
+| URL | Uso |
+|-----|-----|
+| `http://127.0.0.1:8787/project-docs/` | Siempre disponible con el servidor local |
+| `https://nerthzbyt.github.io/Restructured/` | Sitio estático tras deploy Actions |
+
+El footer del Agent Console apunta a `/project-docs/` (local). Tras push a `main` con cambios en `docs/**`, el workflow `.github/workflows/pages.yml` publica el sitio.
+
+**Si GitHub Pages muestra 404:** activar en repo → Settings → Pages → Source: **GitHub Actions**.

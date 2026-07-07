@@ -2,6 +2,13 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/).
 
+## [5.1.1] — 2026-07-07
+
+### Documentación
+- GitHub Pages: `.nojekyll`, secciones live-verify y benchmark Qwen en `docs/index.html`.
+- Nuevos: `docs/v5/live-verification.md`, `docs/v5/qwen-benchmark.md`, `docs/v5/qwen_benchmark_advanced.json`.
+- Catálogo agente: `live_verification`, `qwen_benchmark`, `docs_public_url` en `/agent/catalog`.
+
 ## [5.1.0-linux] — 2026-07-07
 
 ### Added

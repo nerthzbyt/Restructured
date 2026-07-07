@@ -12,7 +12,7 @@
 <div class="layout">
   <aside class="sidebar">
     <div class="brand">NerT Quant</div>
-    <div class="ver">API Reference v5.0.0</div>
+    <div class="ver">API Reference v5.1.0</div>
     <nav class="nav">
       <div class="nav-group">General</div>
       <a href="#intro" class="active">Introducción</a>
@@ -25,15 +25,22 @@
       <div class="nav-group">Trading</div>
       <a href="#orders">Perfiles de orden</a>
       <a href="#validation">Datos validados</a>
+      <a href="#live-verify">Verificación live</a>
       <div class="nav-group">Agent</div>
       <a href="#agent-api">API Agent</a>
       <a href="#qwen">Integración Qwen</a>
+      <a href="#qwen-bench">Benchmark Qwen</a>
       <a href="#roadmap">Roadmap</a>
       <a href="#linux">Linux</a>
+      <div class="nav-group">Extendido</div>
+      <a href="v5/live-verification.md">Live verification (MD)</a>
+      <a href="v5/qwen-benchmark.md">Benchmark Qwen (MD)</a>
+      <a href="v5/linux-platform.md">Plataforma Linux (MD)</a>
+      <a href="v5/agent-api.md">API Agent (MD)</a>
     </nav>
   </aside>
   <main class="content">
-    <span class="badge">v5.0.0</span><span class="badge ok">Bybit Spot</span>
+    <span class="badge">v5.1.0</span><span class="badge ok">Bybit Spot</span><span class="badge ok">Linux OK</span>
     <h1 id="intro">NerT Quant Engine</h1>
     <p class="lead">Documentación de referencia estilo Bybit V5 para el motor cuantitativo Restructured: indicadores propios, niveles de predicción calibrados con datos de exchange y agente autónomo con Qwen.</p>
 
@@ -97,13 +104,31 @@ python NerT_AI_PRO/main.py
     </table>
     <div class="endpoint"><span class="method get">GET</span><code>/agent/order-profiles</code></div>
 
-    <h2 id="validation">Datos validados (2026-07-04)</h2>
-    <ul style="color:#d4d4d4;margin:0 0 20px 20px">
+    <h2 id="validation">Datos validados</h2>
+    <h3>Sweep laboratorio (2026-07-04)</h3>
+    <ul style="color:#d4d4d4;margin:0 0 16px 20px">
       <li>Símbolo: <strong>BTCUSDT</strong> · Fuente: Bybit exchange API (n=500 órdenes)</li>
       <li>Sweep: <strong>29,184</strong> combinaciones · 304 perfiles × 48 params</li>
-      <li>Live demo: fill OK · slippage <strong>2.16 bps</strong> · latencia ~2s</li>
+      <li>Mix exchange: Market+IOC <strong>55%</strong> · Limit+GTC <strong>45%</strong></li>
       <li>Top R:R validado: TP 0.2% / SL 0.15% (1.33:1)</li>
     </ul>
+
+    <h2 id="live-verify">Verificación live (2026-07-07)</h2>
+    <p>Gate post-migración Linux: compara <code>old_results</code> (293 órdenes, 100% Limit+GTC) vs exchange API real (500 órdenes, ~55% Market / 45% Limit). Entorno: <strong>Bybit demo</strong>.</p>
+    <table>
+      <thead><tr><th>Fuente</th><th>Top score</th><th>Perfil #1</th><th>Nota</th></tr></thead>
+      <tbody>
+        <tr><td>old_results</td><td>86.29</td><td>Limit+GTC</td><td>Histórico interno — sesgo maker</td></tr>
+        <tr><td>exchange post-ops</td><td>80.18</td><td>Limit+GTC</td><td>Alineado con API real</td></tr>
+        <tr><td>live demo #1</td><td>78.43</td><td>Market+IOC</td><td>✅ fill · slippage 1.05 bps · 4.0 s</td></tr>
+      </tbody>
+    </table>
+    <ul style="color:#d4d4d4;margin:12px 0 20px 20px">
+      <li>Limit+GTC: alto score lab, sin fill en demo (latencia 2.4–5.0 s)</li>
+      <li>Market+IOC: único fill exitoso en tanda live</li>
+      <li>Balance demo: 80,653.62 → <strong>80,665.56 USDT</strong> (+11.95)</li>
+    </ul>
+    <p>Detalle: <a href="v5/live-verification.md">v5/live-verification.md</a></p>
 
     <h2 id="agent-api">API Agent</h2>
     <div class="endpoint"><span class="method get">GET</span><code>/agent/catalog</code><span style="color:var(--muted);font-size:12px"> — Catálogo completo</span></div>
@@ -144,9 +169,24 @@ python NerT_AI_PRO/main.py
 # Windows: Qwen Desktop → %APPDATA%/Qwen/Local Storage/leveldb
 GET /agent/llm/status → session_found: true</pre>
 
+    <h2 id="qwen-bench">Benchmark Qwen (2026-07-07)</h2>
+    <p>Evaluación <code>benchmark_qwen.py</code> v2.0 advanced — modelo <strong>qwen3.7-max</strong> vía JWT Firefox en Linux.</p>
+    <table>
+      <thead><tr><th>Métrica</th><th>Valor</th></tr></thead>
+      <tbody>
+        <tr><td>Casos / éxito API</td><td>12 / 100%</td></tr>
+        <tr><td>Score medio · Grado</td><td>0.467 · <strong>C</strong></td></tr>
+        <tr><td>Latencia media</td><td>23.85 s</td></tr>
+        <tr><td>Tier estimado</td><td>Mid-tier (0.627) — peers: GPT-4o mini, Mistral Medium</td></tr>
+        <tr><td>Fortaleza</td><td>math <strong>0.85</strong> · code <strong>0.75</strong></td></tr>
+        <tr><td>Debilidad</td><td>trading <strong>0.20</strong> · analysis <strong>0.00</strong></td></tr>
+      </tbody>
+    </table>
+    <p>Usar Qwen para razonamiento math/code; validar schema JSON en trading. <a href="v5/qwen-benchmark.md">Informe completo</a> · <a href="v5/qwen_benchmark_advanced.json">JSON raw</a></p>
+
     <h2 id="linux">Plataforma Linux (v5.1)</h2>
     <p>Variante validada en Ubuntu: JWT desde Firefox, historial de chat en SQLite, fix L0 (métricas del loop), umbrales en UI y docs embebidas en <code>/project-docs/</code>.</p>
-    <p>Detalle: <a href="v5/linux-platform.md">docs/v5/linux-platform.md</a> · Changelog: <code>CHANGELOG.md</code></p>
+    <p>Detalle: <a href="v5/linux-platform.md">v5/linux-platform.md</a> · Changelog: <a href="https://github.com/nerthzbyt/Restructured/blob/main/CHANGELOG.md">CHANGELOG.md</a></p>
 
     <h2 id="roadmap">Usos futuros</h2>
     <table>

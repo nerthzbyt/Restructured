@@ -300,15 +300,50 @@ def compute_prediction_level(
     }
 
 
+LIVE_VERIFICATION_SUMMARY: Dict[str, Any] = {
+    "generated_at": "2026-07-07T02:29:59+00:00",
+    "symbol": "BTCUSDT",
+    "env": "demo",
+    "gate": {
+        "old_results_n": 293,
+        "old_results_top_profile": "Limit|GTC|Order",
+        "exchange_market_ioc_pct": 54.8,
+        "exchange_limit_gtc_pct": 45.0,
+    },
+    "live_top": {
+        "profile": "Market|IOC",
+        "score": 78.4347,
+        "filled": True,
+        "slippage_bps": 1.0533,
+        "latency_ms": 4015.1,
+    },
+    "balance_demo_usdt": {"before": 80653.62, "after": 80665.56, "delta": 11.95},
+    "doc": "docs/v5/live-verification.md",
+}
+
+QWEN_BENCHMARK_SUMMARY: Dict[str, Any] = {
+    "generated_at": "2026-07-07T02:33:14+00:00",
+    "model": "qwen3.7-max",
+    "grade": "C",
+    "avg_score": 0.467,
+    "avg_latency_s": 23.85,
+    "by_category": {"math": 0.85, "code": 0.75, "reasoning": 0.467, "trading": 0.2, "analysis": 0.0, "agent": 0.4},
+    "tier": "Mid-tier",
+    "doc": "docs/v5/qwen-benchmark.md",
+}
+
+
 def full_catalog() -> Dict[str, Any]:
     sweep = _load_sweep_summary()
     out: Dict[str, Any] = {
-        "version": "5.0.0",
+        "version": "5.1.0",
         "indicators": INDICATORS,
         "prediction_levels": PREDICTION_LEVELS,
         "order_profiles": ORDER_PROFILES_VALIDATED,
         "qwen_backends": QWEN_BACKENDS,
         "roadmap": FUTURE_ROADMAP,
+        "live_verification": LIVE_VERIFICATION_SUMMARY,
+        "qwen_benchmark": QWEN_BENCHMARK_SUMMARY,
         "default_weights": {
             "pio": 0.25,
             "egm": 0.30,
