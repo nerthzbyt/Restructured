@@ -10,8 +10,10 @@ _ALLOWED_ROOTS = (
     PROJECT_ROOT / "logs",
     PROJECT_ROOT / "data",
     PROJECT_ROOT / "src",
+    PROJECT_ROOT / "src_dev",
     PROJECT_ROOT / "src_dev" / "output",
     PROJECT_ROOT / "nertz_engine",
+    PROJECT_ROOT / "NerT_AI_PRO",
     PROJECT_ROOT / "scripts",
 )
 

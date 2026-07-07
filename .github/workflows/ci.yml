@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Syntax check
+        run: |
+          python -m compileall -q scripts NerT_AI_PRO nertz_engine src_dev
+          python -m compileall -q src/Nertzh.py
+
+      - name: Unit tests (signal engine)
+        run: |
+          python -m unittest tests.test_signal_engine tests.test_dev_signal_lab -v
+
+      - name: Path safety smoke test
+        run: |
+          python -c "
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from path_safety import safe_path_under_project
+          safe_path_under_project('logs/results.json')
+          print('path_safety ok')
+          "

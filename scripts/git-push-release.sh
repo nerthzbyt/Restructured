@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Push release a GitHub cuando git portable no encuentra remote-https.
+# Autenticación opcional: export GITHUB_TOKEN=ghp_... (no commitear el token).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -15,14 +16,25 @@ elif [ -x "$HOME/.local/usr/bin/git" ]; then
   GIT="$HOME/.local/usr/bin/git"
 fi
 
+REMOTE="${GIT_REMOTE:-origin}"
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  REMOTE="https://x-access-token:${GITHUB_TOKEN}@github.com/nerthzbyt/Restructured.git"
+fi
+
 echo "Using: $GIT (GIT_EXEC_PATH=${GIT_EXEC_PATH:-unset})"
-echo "Branch: $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)"
+echo "Branch: $("$GIT" rev-parse --abbrev-ref HEAD) @ $("$GIT" rev-parse --short HEAD)"
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  echo "Remote: https://github.com/nerthzbyt/Restructured.git (token auth)"
+else
+  echo "Remote: $REMOTE"
+fi
 echo ""
 
-"$GIT" push origin main
-"$GIT" push origin feat/linux-platform-v5.1.0 2>/dev/null || true
-"$GIT" push origin v5.1.0-linux 2>/dev/null || true
+"$GIT" push "$REMOTE" main
+"$GIT" push "$REMOTE" feat/linux-platform-v5.1.0 2>/dev/null || true
+"$GIT" push "$REMOTE" v5.1.0-linux 2>/dev/null || true
 
 echo ""
 echo "OK. Verifica: https://github.com/nerthzbyt/Restructured/commits/main"
-echo "Pages: Settings → Pages → Source: GitHub Actions"
+echo "Pages: https://nerthzbyt.github.io/Restructured/"
+echo "CI: https://github.com/nerthzbyt/Restructured/actions"
