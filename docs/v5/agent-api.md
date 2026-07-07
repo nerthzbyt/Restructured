@@ -90,7 +90,20 @@ Verifica: `project_context`, `bot_live_state`, `nertzh_api.*`, `mcp_bybit.*`, `m
 GET  /agent/memory/stats
 GET  /agent/memory/recent?limit=50
 POST /agent/memory/clear
+GET  /agent/chat/history?limit=30
 ```
+
+`chat/history` empareja `chat_in` + `chat_out` por `session_id` para restaurar el feed de la UI.
+
+## Documentación embebida
+
+```http
+GET /project-docs/
+```
+
+Sirve `docs/` (misma referencia que GitHub Pages). Útil cuando Pages no está desplegado.
+
+Sitio público (tras deploy): `https://nerthzbyt.github.io/Restructured/`
 
 ## Mercado público
 

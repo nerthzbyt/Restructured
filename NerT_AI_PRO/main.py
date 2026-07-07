@@ -12,16 +12,20 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from dotenv import load_dotenv
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
+
 SRC_DIR = os.path.join(BASE_DIR, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
@@ -183,6 +187,61 @@ class AgentMemoryStore:
         min_ts = int(row[1]) if row and row[1] is not None else None
         max_ts = int(row[2]) if row and row[2] is not None else None
         return {"events": total, "min_ts_ms": min_ts, "max_ts_ms": max_ts}
+
+    def chat_turns(self, limit: int = 30) -> list[Dict[str, Any]]:
+        """Empareja chat_in + chat_out por session_id para restaurar el feed de la UI."""
+        lim = int(limit)
+        lim = 1 if lim <= 0 else lim
+        lim = 100 if lim > 100 else lim
+        outs = self.recent(limit=lim, kind="chat_out")
+        if not outs:
+            return []
+        needed_sids = {
+            str((ev.get("payload") or {}).get("session_id") or "").strip()
+            for ev in outs
+        }
+        needed_sids.discard("")
+        ins_by_sid: Dict[str, Dict[str, Any]] = {}
+        if needed_sids:
+            with self._lock:
+                con = self._connect()
+                try:
+                    rows = con.execute(
+                        "SELECT payload_json FROM agent_events WHERE kind = 'chat_in' ORDER BY ts_ms DESC LIMIT ?",
+                        (max(lim * 4, 50),),
+                    ).fetchall()
+                finally:
+                    con.close()
+            for (payload_json,) in rows or []:
+                try:
+                    payload = (
+                        json.loads(payload_json) if isinstance(payload_json, str) else {}
+                    )
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                sid = str(payload.get("session_id") or "").strip()
+                if sid and sid in needed_sids and sid not in ins_by_sid:
+                    ins_by_sid[sid] = payload
+        turns: list[Dict[str, Any]] = []
+        for ev in reversed(outs):
+            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+            sid = str(payload.get("session_id") or "").strip()
+            out = payload.get("out") if isinstance(payload.get("out"), dict) else {}
+            chin = ins_by_sid.get(sid, {})
+            turns.append(
+                {
+                    "id": int(ev.get("id") or 0),
+                    "session_id": sid,
+                    "ts_ms": int(ev.get("ts_ms") or 0),
+                    "message": str(chin.get("message") or "").strip(),
+                    "symbol": chin.get("symbol"),
+                    "intent": out.get("intent"),
+                    "response": out,
+                }
+            )
+        return turns
 
 
 agent_memory = AgentMemoryStore(path=MEMORY_DB_PATH)
@@ -461,6 +520,22 @@ def _weights_from_ticker_data(symbol: Optional[str]) -> CombinedWeights:
     return CombinedWeights.from_dict(cw if isinstance(cw, dict) else None)
 
 
+def _live_metrics_for_symbol(symbol: str) -> Dict[str, Any]:
+    """Métricas del loop del motor (_last_metrics_by_symbol), no ticker_data.metrics."""
+    sym = str(symbol or "BTCUSDT").strip().upper()
+    bot = getattr(nertzh, "bot", None)
+    if bot is None:
+        return {}
+    metrics = dict(getattr(bot, "_last_metrics_by_symbol", {}).get(sym) or {})
+    if metrics:
+        return metrics
+    if hasattr(bot, "ticker_data"):
+        td = bot.ticker_data.get(sym) or {}
+        fallback = td.get("metrics") if isinstance(td.get("metrics"), dict) else {}
+        return dict(fallback)
+    return {}
+
+
 def _start_thresholds() -> Thresholds:
     return Thresholds(
         combined_buy_threshold=float(
@@ -635,6 +710,7 @@ def _chat_html() -> str:
     .bubble.user{align-self:flex-end;background:linear-gradient(135deg,rgba(61,139,253,.25),rgba(0,212,170,.12));border:1px solid rgba(61,139,253,.3)}
     .bubble.agent{align-self:flex-start;background:var(--surface2);border:1px solid var(--border)}
     .bubble.system{align-self:center;font-size:12px;color:var(--muted);background:transparent;border:none;padding:4px}
+    .bubble .ts{display:block;font-size:10px;color:var(--muted);margin-bottom:6px;font-family:'JetBrains Mono',monospace}
     .bubble h3{margin:0 0 8px;font-size:13px;color:var(--accent2)}
     .steps{display:flex;flex-direction:column;gap:6px;margin:10px 0 0}
     .step{font-family:'JetBrains Mono',monospace;font-size:11px;padding:6px 8px;border-radius:8px;background:#0a1020;border:1px solid var(--border)}
@@ -685,7 +761,10 @@ def _chat_html() -> str:
   </header>
   <main>
     <section class="panel">
-      <div class="panel-h"><span>Agent Console</span><span id="session-tag" style="font-weight:400;text-transform:none">—</span></div>
+      <div class="panel-h"><span>Agent Console</span><span style="display:flex;gap:10px;align-items:center;font-weight:400;text-transform:none">
+        <span id="history-tag" style="font-size:11px;color:var(--muted)"></span>
+        <button type="button" onclick="loadChatHistory(true)" style="padding:4px 8px;font-size:10px;border-radius:6px">Historial</button>
+        <span id="session-tag">—</span></span></div>
       <div class="chat-feed" id="feed">
         <div class="bubble system">Agente listo. Pide análisis de mercado, optimización o diagnóstico del sistema.</div>
       </div>
@@ -743,19 +822,55 @@ def _chat_html() -> str:
       </div>
     </aside>
   </main>
-  <footer>API v5 · <a href="https://nerthzbyt.github.io/Restructured/" target="_blank" style="color:var(--accent)">Documentación</a> · <code>/agent/catalog</code> · <code>/docs</code></footer>
+  <footer>API v5 · <a href="/project-docs/" target="_blank" rel="noopener" style="color:var(--accent)">Documentación</a> · <code>/agent/catalog</code> · <code>/docs</code></footer>
 </div>
 <script>
 const feed = document.getElementById('feed');
 let busy = false;
 
-function addBubble(cls, html) {
+function fmtTs(ms) {
+  if (!ms) return '';
+  try {
+    return new Date(ms).toLocaleString('es-MX', {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'});
+  } catch (_) { return ''; }
+}
+
+function addBubble(cls, html, tsMs) {
   const d = document.createElement('div');
   d.className = 'bubble ' + cls;
-  d.innerHTML = html;
+  const stamp = tsMs ? `<span class="ts">${fmtTs(tsMs)}</span>` : '';
+  d.innerHTML = stamp + html;
   feed.appendChild(d);
   feed.scrollTop = feed.scrollHeight;
   return d;
+}
+
+async function loadChatHistory(force) {
+  try {
+    const r = await fetch('/agent/chat/history?limit=30');
+    const data = await r.json();
+    const turns = Array.isArray(data.turns) ? data.turns : [];
+    const tag = document.getElementById('history-tag');
+    if (!turns.length) {
+      if (tag) tag.textContent = '';
+      return;
+    }
+    if (force) feed.innerHTML = '';
+    else if (feed.querySelector('[data-restored]')) return;
+    feed.innerHTML = '';
+    for (const t of turns) {
+      const msg = (t.message || '').replace(/\\n/g, '<br/>');
+      if (msg) addBubble('user', msg, t.ts_ms);
+      addBubble('agent', renderResponse(t.response || {}), t.ts_ms);
+      if (t.session_id) document.getElementById('session-tag').textContent = t.session_id.slice(0,8);
+    }
+    const restored = document.createElement('div');
+    restored.className = 'bubble system';
+    restored.setAttribute('data-restored', '1');
+    restored.textContent = turns.length + ' interacción(es) restauradas · agent_memory.sqlite';
+    feed.insertBefore(restored, feed.firstChild);
+    if (tag) tag.textContent = turns.length + ' msgs';
+  } catch (_) {}
 }
 
 function fmtAnalysis(text) {
@@ -939,6 +1054,12 @@ async function refreshSignals() {
     const tfi = det.tfi != null ? Number(det.tfi).toFixed(3) : '—';
     const mom = det.mom != null ? Number(det.mom).toFixed(4) : '—';
     document.getElementById('sig-mom').textContent = mom + ' / ' + tfi;
+    const cfgTh = st.thresholds || {};
+    const predTh = pred.thresholds || {};
+    const buyTh = cfgTh.combined_buy ?? predTh.buy;
+    const sellTh = cfgTh.combined_sell ?? predTh.sell;
+    document.getElementById('s-buy').textContent = buyTh != null ? Number(buyTh).toFixed(2) : '—';
+    document.getElementById('s-sell').textContent = sellTh != null ? Number(sellTh).toFixed(2) : '—';
   } catch (_) {}
 }
 
@@ -971,6 +1092,7 @@ document.getElementById('msg').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send();
 });
 
+loadChatHistory(false);
 refreshStatus();
 refreshMarket();
 refreshSignals();
@@ -1142,12 +1264,28 @@ async def lifespan(_: FastAPI):
         except Exception as _e:
             nertzh.logger.warning(f"No se pudo restaurar thresholds desde DB: {_e}")
 
-        # Log del estado del LLM para verificar la configuracion activa
         _llm_cfg = _llm_config()
+        llm_auth = "SET" if _llm_cfg.api_key else "NOT SET"
+        if _llm_cfg.backend in {
+            "qwen_desktop",
+            "qwen-desktop",
+            "qwen_studio",
+            "qwen-studio",
+        }:
+            from qwen_desktop import read_desktop_jwt  # noqa: WPS433
+
+            if read_desktop_jwt():
+                llm_auth = "JWT session (Firefox/Desktop)"
         nertzh.logger.info(
             f"LLM backend='{_llm_cfg.backend}'  model='{_llm_cfg.model}'  "
-            f"base_url='{_llm_cfg.base_url}'  api_key={'SET' if _llm_cfg.api_key else 'NOT SET'}"
+            f"base_url='{_llm_cfg.base_url}'  auth={llm_auth}"
         )
+        if _llm_cfg.backend in {"off", "none", "disabled"}:
+            nertzh.logger.warning(
+                "⚠️ Agente INCOMPLETO: LLM deshabilitado — caerá en modo plan heurístico (no ReAct pleno)."
+            )
+        else:
+            nertzh.logger.info("✅ Agente ReAct anti-fable habilitado (tools obligatorias para datos live).")
 
         await nertzh.bot.start_storage()
         nertzh.bot.schedule_start()
@@ -1196,6 +1334,13 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="NerT AI PRO", version="1.0.0", lifespan=lifespan)
 app.mount("/api", nertzh.app)
+_DOCS_STATIC = os.path.join(BASE_DIR, "docs")
+if os.path.isdir(_DOCS_STATIC):
+    app.mount(
+        "/project-docs",
+        StaticFiles(directory=_DOCS_STATIC, html=True),
+        name="project-docs",
+    )
 
 
 ALLOWED_TOOLS = {
@@ -1732,6 +1877,57 @@ async def ui_chat():
 @app.get("/health")
 async def health():
     return {"ok": True, "name": "NerT_AI_PRO", "timestamp": int(time.time() * 1000)}
+
+
+@app.get("/agent/readiness")
+async def agent_readiness():
+    """Comprueba si el agente está completo (LLM + tools + motor) y no degradado."""
+    cfg = _llm_config()
+    llm_ok = cfg.backend not in {"off", "none", "disabled", ""}
+    qwen_detail: Dict[str, Any] = {}
+    if cfg.backend in {"qwen_desktop", "qwen-desktop", "qwen_studio", "qwen-studio"}:
+        qwen_detail = await _qwen_desktop_status()
+        llm_ok = llm_ok and bool(qwen_detail.get("session_found"))
+    elif cfg.backend == "ollama":
+        llm_ok = llm_ok and bool(cfg.base_url)
+    elif cfg.backend in {"openai", "openai_compat", "openai-compatible", "openai_compatible"}:
+        llm_ok = llm_ok and bool(cfg.api_key)
+
+    stats = registry_stats()
+    bot_running = bool(getattr(nertzh.bot, "running", False))
+    executable_tools = int(stats.get("by_kind", {}).get("nertzh_api", 0) or 0) + int(
+        stats.get("by_kind", {}).get("mcp_bybit", 0) or 0
+    )
+
+    blockers: List[str] = []
+    if not llm_ok:
+        blockers.append("llm_not_ready")
+    if executable_tools < 5:
+        blockers.append("few_executable_tools")
+    if not bot_running:
+        blockers.append("bot_not_running")
+
+    return {
+        "ok": len(blockers) == 0,
+        "agent_complete": len(blockers) == 0,
+        "anti_fable_mode": True,
+        "llm": {
+            "backend": cfg.backend,
+            "model": _qwen_normalize_model(cfg.model)
+            if cfg.backend in {"qwen_desktop", "qwen-desktop", "qwen_studio", "qwen-studio"}
+            else cfg.model,
+            "ready": llm_ok,
+            "qwen_desktop": qwen_detail or None,
+        },
+        "motor": {"running": bot_running, "symbols": list(getattr(nertzh.bot, "symbols", []) or [])},
+        "tools": stats,
+        "blockers": blockers,
+        "hint": (
+            "Agente completo: LLM activo, bot corriendo, herramientas ejecutables. "
+            "ReAct exige tools antes de conclusiones live (anti-fable)."
+        ),
+        "timestamp": int(time.time() * 1000),
+    }
 
 
 @app.get("/agent/llm/status")
@@ -2441,6 +2637,18 @@ async def agent_memory_recent(limit: int = 50, kind: Optional[str] = None):
     }
 
 
+@app.get("/agent/chat/history")
+async def agent_chat_history(limit: int = 30):
+    turns = agent_memory.chat_turns(limit=limit)
+    return {
+        "ok": True,
+        "db_path": MEMORY_DB_PATH,
+        "turns": turns,
+        "count": len(turns),
+        "timestamp": int(time.time() * 1000),
+    }
+
+
 @app.get("/agent/analyze")
 async def agent_analyze_trading_data(
     results_path: str = "logs/results.json",
@@ -2681,9 +2889,7 @@ async def agent_context(symbol: Optional[str] = "BTCUSDT"):
     metrics: Dict[str, Any] = {}
     prediction: Dict[str, Any] = {}
     try:
-        if hasattr(nertzh.bot, "ticker_data"):
-            td = nertzh.bot.ticker_data.get(sym) or {}
-            metrics = td.get("metrics") if isinstance(td.get("metrics"), dict) else {}
+        metrics = _live_metrics_for_symbol(sym)
         buy_th = float(getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 6.0) or 6.0)
         sell_th = float(getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -6.0) or -6.0)
         hold_band = float(getattr(nertzh.config, "COMBINED_HOLD_BAND", 3.0) or 3.0)
@@ -2711,7 +2917,7 @@ async def agent_catalog():
     return {
         "ok": True,
         "catalog": intelligence_full_catalog(),
-        "docs_url": "https://nerthzbyt.github.io/Restructured/",
+        "docs_url": "/project-docs/",
         "timestamp": int(time.time() * 1000),
     }
 
@@ -2719,10 +2925,7 @@ async def agent_catalog():
 @app.get("/agent/prediction-level/{symbol}")
 async def agent_prediction_level(symbol: str):
     sym = str(symbol or "BTCUSDT").strip().upper()
-    metrics: Dict[str, Any] = {}
-    if hasattr(nertzh.bot, "ticker_data"):
-        td = nertzh.bot.ticker_data.get(sym) or {}
-        metrics = td.get("metrics") if isinstance(td.get("metrics"), dict) else {}
+    metrics = _live_metrics_for_symbol(sym)
     buy_th = float(getattr(nertzh.config, "COMBINED_BUY_THRESHOLD", 6.0) or 6.0)
     sell_th = float(getattr(nertzh.config, "COMBINED_SELL_THRESHOLD", -6.0) or -6.0)
     hold_band = float(getattr(nertzh.config, "COMBINED_HOLD_BAND", 3.0) or 3.0)
