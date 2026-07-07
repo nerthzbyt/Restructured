@@ -9,15 +9,29 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Tuple
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+
+from url_safety import safe_local_base_url  # noqa: E402
+
+
+def _safe_request_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    safe_base = safe_local_base_url(base)
+    rebuilt = f"{safe_base}{parsed.path or '/'}"
+    if parsed.query:
+        rebuilt = f"{rebuilt}?{parsed.query}"
+    return rebuilt
 
 
 def _get(url: str, timeout: float = 15.0) -> Tuple[bool, Any]:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(_safe_request_url(url), timeout=timeout) as resp:
             return True, json.loads(resp.read())
     except Exception as exc:
         return False, str(exc)
@@ -26,7 +40,7 @@ def _get(url: str, timeout: float = 15.0) -> Tuple[bool, Any]:
 def _post(url: str, payload: Dict[str, Any], timeout: float = 60.0) -> Tuple[bool, Any]:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
-        url,
+        _safe_request_url(url),
         data=body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -133,14 +147,20 @@ def main() -> int:
         print(f"Esperando {args.wait_metrics}s para calibración de métricas...")
         time.sleep(args.wait_metrics)
 
-    print(f"\n=== 2) API en {args.base} ===")
-    ok_health, health = _get(f"{args.base}/health")
+    try:
+        base = safe_local_base_url(args.base)
+    except ValueError as exc:
+        print(f"Base URL no permitida: {exc}")
+        return 2
+
+    print(f"\n=== 2) API en {base} ===")
+    ok_health, health = _get(f"{base}/health")
     if not ok_health:
         print(f"Servidor no disponible: {health}")
         print("Arranca: python NerT_AI_PRO/main.py run --host 127.0.0.1 --port 8787")
         return 2
 
-    checks = validate_api(args.base)
+    checks = validate_api(base)
     passed = sum(1 for _, ok, _ in checks if ok)
     for path, ok, detail in checks:
         print(f"[{'OK' if ok else 'FAIL'}] {path} — {detail}")

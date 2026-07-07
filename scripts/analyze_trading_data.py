@@ -24,7 +24,7 @@ if str(SRC) not in sys.path:
 
 from utils import load_results_json as _store_load_results  # noqa: E402
 
-from path_safety import safe_path_under_project  # noqa: E402
+from path_safety import safe_path_under_project, safe_write_text  # noqa: E402
 
 DEFAULT_RESULTS = ROOT / "logs" / "results.json"
 DEFAULT_JSONL = ROOT / "data" / "metrics_snapshots.jsonl"
@@ -437,9 +437,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     text = json.dumps(report, ensure_ascii=False, indent=2)
 
     if args.out:
-        out_path = safe_path_under_project(Path(args.out))
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(text, encoding="utf-8")
+        out_path = safe_write_text(Path(args.out), text)
         print(f"Reporte guardado: {out_path}")
     else:
         print(text)

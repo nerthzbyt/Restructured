@@ -4,26 +4,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List
 
-from src_dev.config import DEFAULT_SETTINGS
+from src_dev.config import DEFAULT_SETTINGS, PROJECT_ROOT
+
+_SCRIPTS = PROJECT_ROOT / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from path_safety import safe_lines, safe_path_under_project, safe_write_text  # noqa: E402
 
 
 def load_observations(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    if not path.is_file():
+    safe = safe_path_under_project(path, must_exist=False)
+    if not safe.is_file():
         return rows
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    for line in safe_lines(safe):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
     return rows
 
 
@@ -115,13 +121,12 @@ def main() -> None:
     parser.add_argument("--save", action="store_true")
     args = parser.parse_args()
 
-    log_path = Path(args.log or DEFAULT_SETTINGS.signal_lab_log_path)
+    log_path = safe_path_under_project(Path(args.log or DEFAULT_SETTINGS.signal_lab_log_path))
     report = analyze(load_observations(log_path))
     text = json.dumps(report, indent=2, ensure_ascii=False)
     print(text)
     if args.save:
-        out = Path(DEFAULT_SETTINGS.signal_lab_analysis_path)
-        out.write_text(text, encoding="utf-8")
+        out = safe_write_text(DEFAULT_SETTINGS.signal_lab_analysis_path, text)
         print(f"\nGuardado → {out}")
 
 

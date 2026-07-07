@@ -6,14 +6,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
-from path_safety import safe_path_under_project  # noqa: E402
+from path_safety import safe_path_under_project, safe_read_text, safe_write_text  # noqa: E402
 
 NERTZH = safe_path_under_project(ROOT / "src" / "Nertzh.py")
 SYMBOLS = safe_path_under_project(ROOT / "nertz_engine" / "engine" / "symbols.py")
 
 
 def patch_symbols():
-    text = SYMBOLS.read_text(encoding="utf-8")
+    text = safe_read_text(SYMBOLS)
     old = """    def can_trade(self, now: Optional[float] = None) -> bool:
         ts = float(now if now is not None else time.time())
         return (ts - float(self.last_trade_ts)) >= float(self.cooldown_s)"""
@@ -23,12 +23,12 @@ def patch_symbols():
         ts = float(now if now is not None else time.time())
         return (ts - float(self.last_trade_ts)) >= float(self.cooldown_s)"""
     if old in text and new not in text:
-        SYMBOLS.write_text(text.replace(old, new), encoding="utf-8")
+        safe_write_text(SYMBOLS, text.replace(old, new))
         print("patched symbols.py")
 
 
 def patch_nertzh():
-    text = NERTZH.read_text(encoding="utf-8")
+    text = safe_read_text(NERTZH)
 
     if "from nertz_orders import" not in text:
         text = text.replace(
@@ -162,7 +162,7 @@ def patch_nertzh():
     if old_place_start in text:
         text = text.replace(old_place_start, new_place_start)
 
-    NERTZH.write_text(text, encoding="utf-8")
+    safe_write_text(NERTZH, text)
     print("patched Nertzh.py")
 
 

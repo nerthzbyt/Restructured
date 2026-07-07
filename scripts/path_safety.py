@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Iterator, TextIO
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,3 +31,38 @@ def safe_path_under_project(path: Path | str, *, must_exist: bool = False) -> Pa
         except ValueError:
             continue
     raise ValueError(f"path outside allowed project directories: {path}")
+
+
+def safe_read_text(path: Path | str, *, encoding: str = "utf-8", must_exist: bool = True) -> str:
+    safe = safe_path_under_project(path, must_exist=must_exist)
+    return safe.read_text(encoding=encoding)
+
+
+def safe_write_text(path: Path | str, text: str, *, encoding: str = "utf-8") -> Path:
+    safe = safe_path_under_project(path)
+    safe.parent.mkdir(parents=True, exist_ok=True)
+    safe.write_text(text, encoding=encoding)
+    return safe
+
+
+def safe_open(
+    path: Path | str,
+    mode: str = "r",
+    *,
+    encoding: str | None = "utf-8",
+    must_exist: bool | None = None,
+) -> TextIO:
+    read_only = "r" in mode and "+" not in mode and "w" not in mode and "a" not in mode
+    exists = must_exist if must_exist is not None else read_only
+    safe = safe_path_under_project(path, must_exist=exists)
+    if "a" in mode or "w" in mode:
+        safe.parent.mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {}
+    if encoding is not None and "b" not in mode:
+        kwargs["encoding"] = encoding
+    return safe.open(mode, **kwargs)
+
+
+def safe_lines(path: Path | str, *, encoding: str = "utf-8") -> Iterator[str]:
+    with safe_open(path, "r", encoding=encoding, must_exist=True) as handle:
+        yield from handle

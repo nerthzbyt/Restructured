@@ -30,13 +30,14 @@ jobs:
         run: |
           python -m unittest tests.test_signal_engine tests.test_dev_signal_lab -v
 
-      - name: Path safety smoke test
+      - name: Security helper smoke tests
         run: |
           python -c "
           import sys
-          from pathlib import Path
           sys.path.insert(0, 'scripts')
-          from path_safety import safe_path_under_project
+          from path_safety import safe_path_under_project, safe_write_text
+          from url_safety import safe_local_base_url
           safe_path_under_project('logs/results.json')
-          print('path_safety ok')
+          safe_local_base_url('http://127.0.0.1:8787')
+          print('security helpers ok')
           "

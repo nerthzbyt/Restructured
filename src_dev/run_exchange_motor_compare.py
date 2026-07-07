@@ -10,6 +10,7 @@ import asyncio
 import json
 import math
 import statistics
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -18,6 +19,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src_dev.config import DEFAULT_SETTINGS, PROJECT_ROOT
+
+_SCRIPTS = PROJECT_ROOT / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from path_safety import safe_open, safe_path_under_project, safe_write_text  # noqa: E402
 
 BYBIT_PUBLIC = "https://api.bybit.com"
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
@@ -109,7 +115,7 @@ async def run_session(
     base_url: str,
     log_path: Path,
 ) -> Dict[str, Any]:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_log = safe_path_under_project(log_path)
     t_end = time.time() + duration_s
     ticks: List[Dict[str, Any]] = []
     i = 0
@@ -117,7 +123,7 @@ async def run_session(
     print(f"Exchange vs Motor | {duration_s/60:.0f}min | {symbol} | cada {interval_s}s")
     print(f"  exchange → {BYBIT_PUBLIC}/v5/market/tickers")
     print(f"  motor    → {base_url}")
-    print(f"  log      → {log_path}\n")
+    print(f"  log      → {safe_log}\n")
 
     while time.time() < t_end:
         i += 1
@@ -140,7 +146,7 @@ async def run_session(
                 tick["price_delta_motor_vs_exchange"] = None
 
         ticks.append(tick)
-        with open(log_path, "a", encoding="utf-8") as f:
+        with safe_open(safe_log, "a", encoding="utf-8", must_exist=False) as f:
             f.write(json.dumps(tick, ensure_ascii=False) + "\n")
 
         ex_p = ex.get("last") if ex.get("ok") else "?"
@@ -159,17 +165,17 @@ async def run_session(
             await asyncio.sleep(sleep_s)
 
     analysis = analyze_ticks(ticks)
-    summary_path = log_path.with_suffix(".analysis.json")
+    summary_path = safe_log.with_suffix(".analysis.json")
     summary = {
         "duration_s": duration_s,
         "interval_s": interval_s,
         "symbol": symbol,
         "ticks": len(ticks),
-        "log_path": str(log_path),
+        "log_path": str(safe_log),
         "analysis": analysis,
         "ended_at": time.time(),
     }
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    safe_write_text(summary_path, json.dumps(summary, indent=2, ensure_ascii=False))
     return summary
 
 

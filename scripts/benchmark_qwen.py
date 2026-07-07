@@ -23,6 +23,9 @@ import math
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "NerT_AI_PRO"))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+
+from path_safety import safe_write_text  # noqa: E402
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(ROOT, ".env"), override=False)
@@ -433,11 +436,10 @@ def main() -> int:
     parser.add_argument("--out", default=os.path.join(ROOT, "logs", "qwen_benchmark_advanced.json"))
     args = parser.parse_args()
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
     report = asyncio.run(run_benchmark(args.model, args.seed))
 
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
+    out_path = safe_write_text(args.out, json.dumps(report, indent=2, ensure_ascii=False))
+    args.out = str(out_path)
 
     if not report.get("ok"):
         print(json.dumps(report, indent=2, ensure_ascii=False))

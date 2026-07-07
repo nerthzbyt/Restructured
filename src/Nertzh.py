@@ -91,6 +91,11 @@ logging.basicConfig (
 )
 logger = logging.getLogger ("NertzMetalEngine")
 
+
+def _log_s(value: Any, max_len: int = 200) -> str:
+    return str(value).replace("\r", "").replace("\n", " ")[:max_len]
+
+
 # URL y base de datos (mainnet; demo usa api-demo en _bybit_client)
 
 BASE_URL = "https://api.bybit.com"
@@ -2578,10 +2583,10 @@ class NertzMetalEngine:
                 risk_per_trade = self.capital * config.RISK_FACTOR
                 volatility = metrics.get ("volatility", 0.01)
                 if volatility <= 0:
-                    logger.warning (
-                        "⚠️ Volatilidad inválida (%s) para %s, usando 0.01",
-                        volatility,
-                        symbol,
+                    logger.warning(
+                        "Volatilidad invalida (%s) para %s, usando 0.01",
+                        _log_s(volatility),
+                        _log_s(symbol),
                     )
                     volatility = 0.01
 
@@ -2590,7 +2595,7 @@ class NertzMetalEngine:
                     risk_per_trade = min_risk_notional
 
                 if last_price <= 0:
-                    logger.error ("❌ Precio inválido (%s) para %s", last_price, symbol)
+                    logger.error("Precio invalido (%s) para %s", _log_s(last_price), _log_s(symbol))
                     return
 
                 quantity = risk_per_trade / (volatility * last_price)
@@ -2629,10 +2634,10 @@ class NertzMetalEngine:
                 quantity = float (qty_dec)
                 trade_value = quantity * entry_price
                 if trade_value > self.capital:
-                    logger.warning (
-                        "⚠️ Cantidad excesiva (%.2f) para %s. Ajustando...",
+                    logger.warning(
+                        "Cantidad excesiva (%.2f) para %s. Ajustando...",
                         trade_value,
-                        symbol,
+                        _log_s(symbol),
                     )
                     quantity = (self.capital * 0.1) / max (entry_price, 1e-9)
                     qty_dec = self._quantize_to_step (quantity, qty_step, ROUND_DOWN)
@@ -2645,12 +2650,17 @@ class NertzMetalEngine:
                         qty_dec = self._quantize_to_step (float (target_qty), qty_step, ROUND_UP)
                         notional = float (qty_dec) * float (entry_price)
                     if notional > self.capital:
-                        logger.warning (
-                            f"⚠️ No alcanza capital para mínimo del exchange ({min_notional}). Saltando trade.")
+                        logger.warning(
+                            "No alcanza capital para minimo del exchange (%s). Saltando trade.",
+                            _log_s(min_notional),
+                        )
                         return
                     quantity = float (qty_dec)
                     if quantity < float (min_qty_dec):
-                        logger.warning (f"⚠️ Cantidad ajustada ({quantity}) por debajo del mínimo. Saltando trade.")
+                        logger.warning(
+                            "Cantidad ajustada (%s) por debajo del minimo. Saltando trade.",
+                            _log_s(quantity),
+                        )
                         return
 
                 tp, sl = calculate_tp_sl (entry_price, volatility, decision, config.TP_PERCENTAGE, config.SL_PERCENTAGE)
@@ -2673,8 +2683,11 @@ class NertzMetalEngine:
 
                 order_result = await self._place_order (symbol, decision, quantity, entry_price, tp, sl)
                 if not order_result.get ("success", False):
-                    logger.error (
-                        f"❌ Fallo al colocar orden para {symbol}: {order_result.get ('message', 'Error desconocido')}")
+                    logger.error(
+                        "Fallo al colocar orden para %s: %s",
+                        _log_s(symbol),
+                        _log_s(order_result.get("message", "Error desconocido")),
+                    )
                     return
 
                 self.trade_id_counter += 1
@@ -2772,7 +2785,7 @@ class NertzMetalEngine:
                 await self._save_results (symbol, trade)
 
             except Exception as e:
-                logger.error (f"❌ Error en _execute_trade para {symbol}: {e}")
+                logger.error("Error en _execute_trade para %s: %s", _log_s(symbol), _log_s(e))
 
     async def _execute_trade (self, symbol: str, db: Session):
         await self._core_cycle (symbol, db, collect_only=False)
@@ -4106,15 +4119,15 @@ class NertzMetalEngine:
                 ret_code = result.get ("retCode")
                 if http_status == 200 and ret_code == 0:
                     order_id = ((result.get ("result") or {}).get ("orderId")) or ""
-                    logger.info (
-                        "✅ Orden colocada: %s %s %.6f @ %s, TP=%.2f, SL=%.2f, OrderID=%s",
-                        symbol,
-                        side,
+                    logger.info(
+                        "Orden colocada: %s %s %.6f @ %s, TP=%.2f, SL=%.2f, OrderID=%s",
+                        _log_s(symbol),
+                        _log_s(side),
                         quantity,
-                        price if order_type == "Limit" else "Market",
+                        _log_s(price if order_type == "Limit" else "Market"),
                         tp,
                         sl,
-                        order_id,
+                        _log_s(order_id),
                     )
                     self._balance_dirty = True
                     return {"success": True, "order_id": order_id, "order_link_id": order_link_id, "raw": result}
