@@ -49,3 +49,8 @@ NerT_AI_PRO/agent_memory.sqlite
 # Temp
 temp_*.txt
 package-lock.json
+
+# Session forensics (local only)
+snapshots/
+src_dev/output/*.jsonl
+src_dev/output/monitor_session_summary.json

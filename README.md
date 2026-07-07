@@ -26,9 +26,11 @@ Motor de trading cuantitativo para **Bybit Spot** con agente autónomo **NerT AI
 # Clonar e instalar
 git clone https://github.com/nerthzbyt/Restructured.git
 cd Restructured
-python -m venv .venv
-.venv\Scripts\activate          # Windows
+python3 -m venv .venv
+source .venv/bin/activate       # Linux / macOS
+# .venv\Scripts\activate        # Windows
 pip install -r requirements.txt
+cp .env.example .env
 
 # Configurar (.env)
 BYBIT_API_KEY=...
@@ -56,8 +58,9 @@ Abre `http://127.0.0.1:8787` para la consola del agente (tema negro profesional)
 | [API Agent](docs/v5/agent-api.md) | Endpoints REST del agente |
 | [Integración Qwen](docs/v5/qwen-integration.md) | LLM backends y modelos |
 | [Roadmap](docs/v5/roadmap.md) | Usos futuros |
+| [Plataforma Linux](docs/v5/linux-platform.md) | Firefox JWT, fixes UI, validación 2026-07 |
 
-**Sitio web:** [nerthzbyt.github.io/Restructured](https://nerthzbyt.github.io/Restructured/)
+**Sitio web:** [nerthzbyt.github.io/Restructured](https://nerthzbyt.github.io/Restructured/) (GitHub Pages; también `http://127.0.0.1:8787/project-docs/` en local)
 
 ## API Agent — endpoints principales
 

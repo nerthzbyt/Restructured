@@ -29,6 +29,7 @@
       <a href="#agent-api">API Agent</a>
       <a href="#qwen">Integración Qwen</a>
       <a href="#roadmap">Roadmap</a>
+      <a href="#linux">Linux</a>
     </nav>
   </aside>
   <main class="content">
@@ -110,6 +111,8 @@ python NerT_AI_PRO/main.py
     <div class="endpoint"><span class="method post">POST</span><code>/agent/chat</code><span style="color:var(--muted);font-size:12px"> — Agente ReAct autónomo</span></div>
     <div class="endpoint"><span class="method post">POST</span><code>/agent/optimize</code><span style="color:var(--muted);font-size:12px"> — Optuna thresholds</span></div>
     <div class="endpoint"><span class="method get">GET</span><code>/agent/llm/status</code><span style="color:var(--muted);font-size:12px"> — Estado Qwen</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/agent/chat/history</code><span style="color:var(--muted);font-size:12px"> — Historial Agent Console</span></div>
+    <div class="endpoint"><span class="method get">GET</span><code>/project-docs/</code><span style="color:var(--muted);font-size:12px"> — Esta documentación (servidor local)</span></div>
     <div class="endpoint"><span class="method post">POST</span><code>/predict/{symbol}</code><span style="color:var(--muted);font-size:12px"> — Decisión + ML</span></div>
 
     <h3>Ejemplo: prediction-level</h3>
@@ -137,8 +140,13 @@ python NerT_AI_PRO/main.py
       </tbody>
     </table>
     <pre>LLM_BACKEND=qwen_desktop
-# Abrir Qwen Desktop e iniciar sesión (Google)
-GET /agent/llm/status → qwen_desktop.token_present: true</pre>
+# Linux: iniciar sesión en chat.qwen.ai con Firefox
+# Windows: Qwen Desktop → %APPDATA%/Qwen/Local Storage/leveldb
+GET /agent/llm/status → session_found: true</pre>
+
+    <h2 id="linux">Plataforma Linux (v5.1)</h2>
+    <p>Variante validada en Ubuntu: JWT desde Firefox, historial de chat en SQLite, fix L0 (métricas del loop), umbrales en UI y docs embebidas en <code>/project-docs/</code>.</p>
+    <p>Detalle: <a href="v5/linux-platform.md">docs/v5/linux-platform.md</a> · Changelog: <code>CHANGELOG.md</code></p>
 
     <h2 id="roadmap">Usos futuros</h2>
     <table>

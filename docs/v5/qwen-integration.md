@@ -12,10 +12,12 @@ NerT AI PRO soporta múltiples backends LLM con preferencia por **Qwen Desktop**
 
 ## Qwen Desktop
 
-1. Instalar [Qwen Desktop](https://chat.qwen.ai)
-2. Iniciar sesión (Google)
-3. El token JWT se lee de `%APPDATA%/Qwen/Local Storage/leveldb`
-4. Verificar: `GET /agent/llm/status` → `qwen_desktop.token_present: true`
+1. Iniciar sesión en [chat.qwen.ai](https://chat.qwen.ai) (app desktop o **Firefox** en Linux)
+2. El JWT se lee del almacenamiento local del navegador/app:
+   - **Windows:** `%APPDATA%/Qwen/Local Storage/leveldb`
+   - **Linux:** Firefox `~/.mozilla/firefox/.../https+++chat.qwen.ai/ls`, snap Firefox, snap `qwen-desktop`
+3. Override: `LLM_QWEN_DESKTOP_LEVELDB=/ruta/custom/leveldb`
+4. Verificar: `GET /agent/llm/status` → `session_found: true`
 
 Implementación: `NerT_AI_PRO/qwen_desktop.py`
 

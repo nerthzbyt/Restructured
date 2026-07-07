@@ -39,13 +39,194 @@ _baxia_cache: Optional[Dict[str, str]] = None
 _baxia_cache_time: float = 0.0
 _baxia_cache_ttl_s: float = 240.0
 
+_QWEN_ORIGIN_MARKERS = ("qwen", "chat.qwen.ai")
+_MAX_JWT_SCAN_BYTES = 50_000_000
+
+
+def _xdg_config_home() -> Path:
+    return Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser()
+
+
+def _xdg_data_home() -> Path:
+    return Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share")).expanduser()
+
+
+def _firefox_profiles_root() -> List[Path]:
+    roots: List[Path] = []
+    for base in (
+        _xdg_config_home() / "mozilla" / "firefox",
+        Path.home() / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
+    ):
+        if base.is_dir():
+            roots.append(base)
+    return roots
+
+
+def discover_jwt_storage_paths() -> List[Path]:
+    """Rutas candidatas para extraer JWT (Windows, Linux Desktop, Firefox, Chromium)."""
+    seen: set[str] = set()
+    out: List[Path] = []
+
+    def _add(path: Path) -> None:
+        key = str(path.expanduser())
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(path.expanduser())
+
+    override = os.getenv("LLM_QWEN_DESKTOP_LEVELDB", "").strip()
+    if override:
+        _add(Path(override))
+
+    appdata = os.getenv("APPDATA", "").strip()
+    if appdata:
+        _add(Path(appdata) / "Qwen" / "Local Storage" / "leveldb")
+
+    config = _xdg_config_home()
+    home = Path.home()
+
+    for rel in (
+        config / "Qwen" / "Local Storage" / "leveldb",
+        home / "snap" / "qwen-desktop" / "current" / ".config" / "Qwen" / "Local Storage" / "leveldb",
+        home / "snap" / "qwen-desktop" / "common" / ".config" / "Qwen" / "Local Storage" / "leveldb",
+    ):
+        _add(rel)
+
+    for browser in (
+        "chromium",
+        "google-chrome",
+        "BraveSoftware/Brave-Browser",
+        "microsoft-edge",
+        "vivaldi",
+    ):
+        _add(config / browser / "Default" / "Local Storage" / "leveldb")
+        _add(config / browser / "Profile 1" / "Local Storage" / "leveldb")
+
+    for ff_root in _firefox_profiles_root():
+        for profile in sorted(ff_root.glob("*.default*")):
+            if not profile.is_dir():
+                continue
+            storage = profile / "storage" / "default"
+            if not storage.is_dir():
+                continue
+            _add(storage / "https+++chat.qwen.ai" / "ls")
+            _add(storage / "https+++chat.qwen.ai")
+            for origin_dir in storage.iterdir():
+                name = origin_dir.name.lower()
+                if any(marker in name for marker in _QWEN_ORIGIN_MARKERS):
+                    _add(origin_dir / "ls")
+                    _add(origin_dir)
+
+    token_file = os.getenv("LLM_QWEN_TOKEN_FILE", "").strip()
+    if token_file:
+        _add(Path(token_file))
+
+    return out
+
 
 def default_leveldb_path() -> Path:
     override = os.getenv("LLM_QWEN_DESKTOP_LEVELDB", "").strip()
     if override:
-        return Path(override)
-    appdata = os.getenv("APPDATA", "")
-    return Path(appdata) / "Qwen" / "Local Storage" / "leveldb"
+        return Path(override).expanduser()
+    for path in discover_jwt_storage_paths():
+        if path.exists():
+            return path
+    if os.name == "nt" and os.getenv("APPDATA"):
+        return Path(os.getenv("APPDATA", "")) / "Qwen" / "Local Storage" / "leveldb"
+    return _xdg_config_home() / "Qwen" / "Local Storage" / "leveldb"
+
+
+def _pick_best_jwt(candidates: List[Optional[str]]) -> Optional[str]:
+    best: Optional[str] = None
+    for tok in candidates:
+        if not tok:
+            continue
+        if best is None or len(tok) > len(best):
+            best = tok
+    return best
+
+
+def _extract_jwt_from_bytes(data: bytes) -> Optional[str]:
+    text = data.decode("utf-8", "ignore")
+    return _pick_best_jwt([m.group(0) for m in JWT_RE.finditer(text)])
+
+
+def _scan_leveldb_dir(path: Path) -> Optional[str]:
+    tokens: List[Optional[str]] = []
+    for f in sorted(path.glob("*")):
+        if f.suffix not in {".log", ".ldb"}:
+            continue
+        try:
+            tokens.append(_extract_jwt_from_bytes(f.read_bytes()))
+        except OSError:
+            continue
+    return _pick_best_jwt(tokens)
+
+
+def _scan_sqlite_file(path: Path) -> Optional[str]:
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute("SELECT key, value FROM data").fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        try:
+            return _extract_jwt_from_bytes(path.read_bytes())
+        except OSError:
+            return None
+
+    tokens: List[Optional[str]] = []
+    for key, value in rows:
+        if isinstance(key, (bytes, bytearray)):
+            tokens.append(_extract_jwt_from_bytes(bytes(key)))
+        elif isinstance(key, str):
+            tokens.append(_extract_jwt_from_bytes(key.encode("utf-8", "ignore")))
+        if isinstance(value, (bytes, bytearray)):
+            tokens.append(_extract_jwt_from_bytes(bytes(value)))
+        elif isinstance(value, str):
+            tokens.append(_extract_jwt_from_bytes(value.encode("utf-8", "ignore")))
+    return _pick_best_jwt(tokens)
+
+
+def _scan_storage_path(path: Path) -> Optional[str]:
+    if path.is_file():
+        if path.suffix.lower() in {".sqlite", ".sqlite-wal", ".log", ".ldb"}:
+            if path.suffix.lower() == ".sqlite":
+                return _scan_sqlite_file(path)
+            try:
+                return _extract_jwt_from_bytes(path.read_bytes())
+            except OSError:
+                return None
+        return None
+
+    if not path.is_dir():
+        return None
+
+    if path.name == "leveldb" or any(path.glob("*.ldb")):
+        tok = _scan_leveldb_dir(path)
+        if tok:
+            return tok
+
+    tokens: List[Optional[str]] = []
+    for f in sorted(path.rglob("*")):
+        if not f.is_file():
+            continue
+        try:
+            if f.stat().st_size > _MAX_JWT_SCAN_BYTES:
+                continue
+        except OSError:
+            continue
+        if f.suffix.lower() == ".sqlite":
+            tokens.append(_scan_sqlite_file(f))
+        elif f.suffix.lower() in {".sqlite-wal", ".log", ".ldb"}:
+            try:
+                tokens.append(_extract_jwt_from_bytes(f.read_bytes()))
+            except OSError:
+                continue
+    return _pick_best_jwt(tokens)
 
 
 def normalize_model(model: str) -> str:
@@ -55,28 +236,57 @@ def normalize_model(model: str) -> str:
     return MODEL_ALIASES.get(m, m)
 
 
-def read_desktop_jwt(*, leveldb_path: Optional[Path] = None) -> Optional[str]:
+def read_desktop_jwt(
+    *,
+    leveldb_path: Optional[Path] = None,
+    _return_meta: bool = False,
+) -> Optional[str] | tuple[Optional[str], Dict[str, Any]]:
+    meta: Dict[str, Any] = {
+        "platform": os.name,
+        "source": None,
+        "searched_paths": [],
+    }
+
     token_override = os.getenv("LLM_API_KEY", "").strip()
     if token_override and token_override.startswith("eyJ"):
-        return token_override
+        meta["source"] = "env:LLM_API_KEY"
+        return (token_override, meta) if _return_meta else token_override
 
-    path = leveldb_path or default_leveldb_path()
-    if not path.exists():
-        return None
+    candidates = [leveldb_path] if leveldb_path else discover_jwt_storage_paths()
+    for path in candidates:
+        if path is None:
+            continue
+        expanded = path.expanduser()
+        meta["searched_paths"].append(str(expanded))
+        if not expanded.exists():
+            continue
+        tok = _scan_storage_path(expanded)
+        if tok:
+            meta["source"] = str(expanded)
+            return (tok, meta) if _return_meta else tok
 
-    best: Optional[str] = None
-    for f in sorted(path.glob("*")):
-        if f.suffix not in {".log", ".ldb"}:
-            continue
-        try:
-            text = f.read_bytes().decode("utf-8", "ignore")
-        except OSError:
-            continue
-        for m in JWT_RE.finditer(text):
-            tok = m.group(0)
-            if best is None or len(tok) > len(best):
-                best = tok
-    return best
+    return (None, meta) if _return_meta else None
+
+
+def _jwt_missing_message(meta: Dict[str, Any]) -> str:
+    if os.name == "nt":
+        hint = (
+            "Abre Qwen Desktop e inicia sesión, o define LLM_API_KEY=eyJ... "
+            "con el JWT de chat.qwen.ai."
+        )
+    else:
+        hint = (
+            "En Linux: inicia sesión en chat.qwen.ai (Firefox/Chromium) o usa "
+            "Qwen Desktop snap, luego define LLM_API_KEY=eyJ... copiado del "
+            "header Authorization en DevTools → Red, o apunta "
+            "LLM_QWEN_DESKTOP_LEVELDB a tu carpeta de almacenamiento."
+        )
+    paths = meta.get("searched_paths") or []
+    if paths:
+        hint += f" Rutas revisadas: {paths[0]}"
+        if len(paths) > 1:
+            hint += f" (+{len(paths) - 1} más)."
+    return hint
 
 
 def _encode_baxia_token(data: Dict[str, Any]) -> str:
@@ -232,15 +442,14 @@ async def qwen_desktop_chat(
     timeout_s: float,
 ) -> Dict[str, Any]:
     actual_model = normalize_model(model)
-    jwt = read_desktop_jwt()
+    jwt, meta = read_desktop_jwt(_return_meta=True)
     if not jwt:
         return {
             "ok": False,
             "error": "qwen_desktop_token_missing",
-            "message": (
-                "No se encontró token JWT en Qwen Desktop. "
-                "Abre Qwen Desktop e inicia sesión con tu cuenta Google."
-            ),
+            "message": _jwt_missing_message(meta),
+            "platform": meta.get("platform"),
+            "searched_paths": meta.get("searched_paths"),
         }
 
     content = _merge_messages(messages)
@@ -351,12 +560,19 @@ async def qwen_desktop_chat(
 
 
 async def qwen_desktop_status() -> Dict[str, Any]:
-    jwt = read_desktop_jwt()
+    jwt, meta = read_desktop_jwt(_return_meta=True)
+    candidates = discover_jwt_storage_paths()
     out: Dict[str, Any] = {
         "session_found": bool(jwt),
+        "platform": os.name,
         "leveldb_path": str(default_leveldb_path()),
+        "token_source": meta.get("source"),
+        "searched_paths": meta.get("searched_paths") or [str(p) for p in candidates],
+        "existing_paths": [str(p) for p in candidates if p.exists()],
+        "firefox_profiles": [str(p) for p in _firefox_profiles_root()],
     }
     if not jwt:
+        out["hint"] = _jwt_missing_message(meta)
         return out
 
     try:
