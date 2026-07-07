@@ -64,6 +64,7 @@ class MetricValidationReport:
     reference_raw: Dict[str, float]
     raw_checks: Dict[str, Dict[str, Any]]
     jsonl_compare: Optional[Dict[str, Any]] = None
+    live_api_compare: Optional[Dict[str, Any]] = None
     orderbook_stats: Optional[Dict[str, Any]] = None
     passed: bool = False
     notes: List[str] = field(default_factory=list)
@@ -82,5 +83,6 @@ class MetricValidationReport:
             "reference_pio_raw": self.reference_raw.get("pio_raw"),
             "raw_checks": self.raw_checks,
             "jsonl_compare": self.jsonl_compare,
+            "live_api_compare": self.live_api_compare,
             "orderbook_stats": self.orderbook_stats,
         }

@@ -1,7 +1,10 @@
 """Valida calculate_metrics de utils contra referencia independiente y JSONL."""
 from __future__ import annotations
 
+import json
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 from src_dev.analysis.orderbook_stats import analyze_orderbook
@@ -38,6 +41,47 @@ def _check_raw(
         "reference": ref_val,
         "rel_error_pct": round(err * 100.0, 4),
         "tolerance_pct": tolerance_pct,
+    }
+
+
+def _fetch_live_metrics(symbol: str, base_url: str) -> Optional[Dict[str, Any]]:
+    url = f"{base_url.rstrip('/')}/api/metrics/{symbol}"
+    try:
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            payload = json.loads(resp.read().decode())
+        metrics = payload.get("metrics")
+        return metrics if isinstance(metrics, dict) else None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _compare_live_api(
+    utils_metrics: Dict[str, Any],
+    live_metrics: Dict[str, Any],
+    *,
+    z_tol: float,
+) -> Dict[str, Any]:
+    checks = {}
+    for key in ("pio_raw", "ild_raw", "egm_raw", "combined"):
+        u = float(utils_metrics.get(key) or 0.0)
+        live = float(live_metrics.get(key) or 0.0)
+        if key == "combined":
+            diff = abs(u - live)
+            ok = diff <= z_tol * 10 or (not utils_metrics.get("metrics_calibrated") and live != 0.0)
+            checks[key] = {"dev": u, "live": live, "abs_diff": diff, "ok": ok}
+        else:
+            err = _rel_err(u, live)
+            checks[key] = {
+                "dev": u,
+                "live": live,
+                "rel_error_pct": err * 100,
+                "ok": err <= 0.02,
+            }
+    return {
+        "live_calibrated": bool(live_metrics.get("metrics_calibrated")),
+        "live_combined": live_metrics.get("combined"),
+        "checks": checks,
+        "all_ok": all(c.get("ok") for c in checks.values()),
     }
 
 
@@ -113,6 +157,20 @@ def validate_snapshot(
         last_price=snapshot.last_price,
     )
 
+    live_cmp = None
+    live_metrics = _fetch_live_metrics(snapshot.symbol, cfg.live_api_url)
+    if live_metrics:
+        live_cmp = _compare_live_api(utils_metrics, live_metrics, z_tol=cfg.z_tolerance)
+        if live_cmp.get("all_ok"):
+            notes.append("Live API cross-check OK (dev REST vs bot :8787)")
+        elif not utils_metrics.get("metrics_calibrated") and live_cmp.get("live_calibrated"):
+            notes.append(
+                "RAW OK; combined difiere porque dev sin historial de calibración "
+                f"(live={live_cmp.get('live_combined')})"
+            )
+    else:
+        notes.append(f"Bot no alcanzable en {cfg.live_api_url} — sin cross-check live")
+
     jsonl_cmp = None
     if compare_jsonl:
         tail = load_jsonl_tail(snapshot.symbol, limit=1, settings=cfg)
@@ -144,6 +202,7 @@ def validate_snapshot(
         reference_raw=reference,
         raw_checks=raw_checks,
         jsonl_compare=jsonl_cmp,
+        live_api_compare=live_cmp,
         orderbook_stats=ob_stats,
         passed=passed,
         notes=notes,

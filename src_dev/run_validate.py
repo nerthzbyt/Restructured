@@ -38,6 +38,14 @@ def _print_report(report) -> None:
             f"\n  Orderbook: mid={ob.get('mid'):.2f} spread_bps={ob.get('spread_bps'):.4f} "
             f"imbalance={ob.get('depth_imbalance_qty'):.4f}"
         )
+    if report.live_api_compare:
+        lc = report.live_api_compare
+        print(f"\n  Live API (:8787) calibrated={lc.get('live_calibrated')} combined={lc.get('live_combined')}")
+        for key, chk in (lc.get("checks") or {}).items():
+            status = "OK" if chk.get("ok") else "DIFF"
+            dev_val = chk.get("dev", chk.get("utils"))
+            live_val = chk.get("live", chk.get("jsonl"))
+            print(f"    [{status}] {key}: dev={dev_val} live={live_val}")
     if report.jsonl_compare:
         jc = report.jsonl_compare
         print(f"\n  JSONL bot (age={jc.get('age_s')}s decision={jc.get('jsonl_decision')}):")

@@ -114,6 +114,16 @@ class DevSettings:
     lab_require_credentials: bool = True
     lab_min_calibration_samples: int = 4
     lab_ws_probe_s: float = 10.0
+    raw_tolerance_pct: float = 5.0
+    z_tolerance: float = 1.0
+    live_api_url: str = "http://127.0.0.1:8787"
+    dev_signal_lab_iterations: int = 12
+    dev_signal_lab_interval_s: float = 8.0
+    dev_ml_enabled: bool = True
+    dev_ml_auto_train: bool = True
+    dev_ml_min_samples: int = 8
+    dev_ml_forward_horizon_s: float = 60.0
+    dev_ml_forward_min_bps: float = 3.0
     combined_weights: dict = field(default_factory=dict)
     endpoints: BybitEndpoints = field(default_factory=BybitEndpoints)
 
@@ -145,6 +155,18 @@ class DevSettings:
             lab_require_credentials=_env_bool("DEV_LAB_REQUIRE_CREDENTIALS", True),
             lab_min_calibration_samples=_env_int("DEV_LAB_MIN_CALIBRATION_SAMPLES", 4),
             lab_ws_probe_s=_env_float("DEV_LAB_WS_PROBE_S", 10.0),
+            raw_tolerance_pct=_env_float("DEV_RAW_TOLERANCE_PCT", 5.0),
+            z_tolerance=_env_float("DEV_Z_TOLERANCE", 1.0),
+            live_api_url=str(
+                os.getenv("DEV_LIVE_API_URL", "http://127.0.0.1:8787") or "http://127.0.0.1:8787"
+            ).strip().rstrip("/"),
+            dev_signal_lab_iterations=_env_int("DEV_SIGNAL_LAB_ITERATIONS", 12),
+            dev_signal_lab_interval_s=_env_float("DEV_SIGNAL_LAB_INTERVAL_S", 8.0),
+            dev_ml_enabled=_env_bool("DEV_ML_ENABLED", True),
+            dev_ml_auto_train=_env_bool("DEV_ML_AUTO_TRAIN", True),
+            dev_ml_min_samples=_env_int("DEV_ML_MIN_SAMPLES", 8),
+            dev_ml_forward_horizon_s=_env_float("DEV_ML_FORWARD_HORIZON_S", 60.0),
+            dev_ml_forward_min_bps=_env_float("DEV_ML_FORWARD_MIN_BPS", 3.0),
             combined_weights=_load_combined_weights(),
         )
 
@@ -164,6 +186,26 @@ class DevSettings:
     @property
     def jsonl_path(self) -> str:
         return os.path.join(DATA_DIR, "metrics_snapshots.jsonl")
+
+    @property
+    def validation_log_path(self) -> str:
+        return os.path.join(OUTPUT_DIR, "validation_log.jsonl")
+
+    @property
+    def signal_lab_log_path(self) -> str:
+        return os.path.join(OUTPUT_DIR, "signal_lab.jsonl")
+
+    @property
+    def signal_lab_summary_path(self) -> str:
+        return os.path.join(OUTPUT_DIR, "signal_lab_summary.json")
+
+    @property
+    def signal_lab_analysis_path(self) -> str:
+        return os.path.join(OUTPUT_DIR, "signal_lab_analysis.json")
+
+    @property
+    def signal_lab_model_path(self) -> str:
+        return os.path.join(OUTPUT_DIR, "signal_lab_ml_model.json")
 
 
 DEFAULT_SETTINGS = DevSettings.from_env()
