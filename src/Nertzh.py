@@ -3894,10 +3894,6 @@ class NertzMetalEngine:
                 "marketUnit": "baseCoin",
                 "orderLinkId": order_link_id,
             }
-            try:
-                tick_size = float (rules.get ("tick_size") or 0.01)
-            except Exception:
-                tick_size = 0.01
             # Spot Market: sin TP/SL nativo — virtual TPSL vía AUTO_TPSL/outcomes
             create_result = await client.create_order (create_body)
             if create_result.get ("retCode") != 0:
