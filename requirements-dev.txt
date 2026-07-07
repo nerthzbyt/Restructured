@@ -1,0 +1,8 @@
+pytest
+pytest-cov
+bandit
+flake8
+mypy
+sqlalchemy-stubs
+pydantic[mypy]
+python-dotenv
