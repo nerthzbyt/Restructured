@@ -1,0 +1,12 @@
+# Pinned direct dependencies for reproducible installs (Sonar S6698).
+# Regenerate: python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip freeze -r requirements.txt
+aiohttp==3.14.1
+numpy==2.5.1
+optuna==4.9.0
+uvicorn==0.50.2
+python-dotenv==1.2.2
+fastapi==0.139.0
+SQLAlchemy==2.0.51
+websockets==16.0
+pydantic==2.13.4
+duckdb==1.5.4

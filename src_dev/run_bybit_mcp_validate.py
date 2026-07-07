@@ -16,7 +16,9 @@ import argparse
 import json
 import os
 import shutil
+import sys
 import time
+from pathlib import Path
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -24,6 +26,11 @@ from typing import Any, Dict, List
 from dotenv import load_dotenv
 
 from src_dev.config import OUTPUT_DIR, PROJECT_ROOT, private_rest_base_url
+
+_SCRIPTS = PROJECT_ROOT / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from path_safety import safe_path_under_project  # noqa: E402
 from src_dev.mcp_bybit.client import McpBybitClient
 from src_dev.mcp_bybit.probes import (
     NERTZH_USED_ENDPOINTS,
@@ -213,9 +220,10 @@ def main() -> None:
     args = parser.parse_args()
 
     report = run(args)
-    out_path = args.out or os.path.join(OUTPUT_DIR, "bybit_mcp_validate.json")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
+    default_out = Path(OUTPUT_DIR) / "bybit_mcp_validate.json"
+    out_path = safe_path_under_project(Path(args.out) if args.out else default_out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
     print(f"Bybit MCP validation -> {out_path}")

@@ -2458,7 +2458,8 @@ async def agent_autoevolve(req: AutoEvolveRequest):
     cur_th = _start_thresholds()
     cur_w = _weights_from_ticker_data(req.symbol)
 
-    for r in range(int(req.rounds)):
+    rounds = min(max(int(req.rounds), 1), 10)
+    for r in range(rounds):
         baseline = _evaluate_baseline_for_autoevolve(trades, cur_th, cur_w)
         proposal = None
         if bool(req.use_llm):

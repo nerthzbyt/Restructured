@@ -2578,7 +2578,11 @@ class NertzMetalEngine:
                 risk_per_trade = self.capital * config.RISK_FACTOR
                 volatility = metrics.get ("volatility", 0.01)
                 if volatility <= 0:
-                    logger.warning (f"⚠️ Volatilidad inválida ({volatility}) para {symbol}, usando 0.01")
+                    logger.warning (
+                        "⚠️ Volatilidad inválida (%s) para %s, usando 0.01",
+                        volatility,
+                        symbol,
+                    )
                     volatility = 0.01
 
                 min_risk_notional = max (min_notional * 1.1, 1.0)
@@ -2586,7 +2590,7 @@ class NertzMetalEngine:
                     risk_per_trade = min_risk_notional
 
                 if last_price <= 0:
-                    logger.error (f"❌ Precio inválido ({last_price}) para {symbol}")
+                    logger.error ("❌ Precio inválido (%s) para %s", last_price, symbol)
                     return
 
                 quantity = risk_per_trade / (volatility * last_price)
@@ -2625,7 +2629,11 @@ class NertzMetalEngine:
                 quantity = float (qty_dec)
                 trade_value = quantity * entry_price
                 if trade_value > self.capital:
-                    logger.warning (f"⚠️ Cantidad excesiva ({trade_value:.2f}) para {symbol}. Ajustando...")
+                    logger.warning (
+                        "⚠️ Cantidad excesiva (%.2f) para %s. Ajustando...",
+                        trade_value,
+                        symbol,
+                    )
                     quantity = (self.capital * 0.1) / max (entry_price, 1e-9)
                     qty_dec = self._quantize_to_step (quantity, qty_step, ROUND_DOWN)
                     if qty_dec < min_qty_dec:
@@ -4099,7 +4107,14 @@ class NertzMetalEngine:
                 if http_status == 200 and ret_code == 0:
                     order_id = ((result.get ("result") or {}).get ("orderId")) or ""
                     logger.info (
-                        f"✅ Orden colocada: {symbol} {side} {quantity:.6f} @ {price if order_type == 'Limit' else 'Market'}, TP={tp:.2f}, SL={sl:.2f}, OrderID={order_id}"
+                        "✅ Orden colocada: %s %s %.6f @ %s, TP=%.2f, SL=%.2f, OrderID=%s",
+                        symbol,
+                        side,
+                        quantity,
+                        price if order_type == "Limit" else "Market",
+                        tp,
+                        sl,
+                        order_id,
                     )
                     self._balance_dirty = True
                     return {"success": True, "order_id": order_id, "order_link_id": order_link_id, "raw": result}

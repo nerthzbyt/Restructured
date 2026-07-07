@@ -199,7 +199,7 @@ QWEN_BACKENDS: List[Dict[str, Any]] = [
     {
         "backend": "openai_compat",
         "models": ["qwen-plus-latest", "qwen-max-latest"],
-        "auth": "DASHSCOPE_API_KEY",
+        "auth": "env var DASHSCOPE_API_KEY",
         "use_case": "Producción cloud DashScope",
     },
     {

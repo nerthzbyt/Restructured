@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import random
 import re
 import secrets
 import time
@@ -309,22 +308,30 @@ async def _get_baxia_tokens(session: aiohttp.ClientSession) -> Dict[str, str]:
     ]
     import hashlib
 
+    def _secret_randint(lo: int, hi: int) -> int:
+        return lo + secrets.randbelow(hi - lo + 1)
+
+    def _secret_choice(options: List[Any]) -> Any:
+        return options[secrets.randbelow(len(options))]
+
+    def _secret_unit_float() -> float:
+        return secrets.randbits(53) / float(1 << 53)
+
     fp = {
         "p": "Win32",
         "l": "es-ES",
-        "hc": random.randint(4, 15),
-        "dm": random.choice([4, 8, 16, 32]),
+        "hc": _secret_randint(4, 15),
+        "dm": _secret_choice([4, 8, 16, 32]),
         "to": 60,
-        "sw": 1920 + random.randint(0, 200),
-        "sh": 1080 + random.randint(0, 100),
+        "sw": 1920 + _secret_randint(0, 200),
+        "sh": 1080 + _secret_randint(0, 100),
         "cd": 24,
-        "pr": random.choice([1, 1.25, 1.5, 2]),
-        "wf": random.choice(renderers)[:20],
-        "cf": base64.b64encode(hashlib.md5(secrets.token_bytes(32)).digest())
-        .decode("ascii")[:32],
-        "af": f"{124.04347527516074 + random.random() * 0.001:.14f}",
+        "pr": _secret_choice([1, 1.25, 1.5, 2]),
+        "wf": str(_secret_choice(renderers))[:20],
+        "cf": hashlib.sha256(secrets.token_bytes(32)).hexdigest()[:32],
+        "af": f"{124.04347527516074 + _secret_unit_float() * 0.001:.14f}",
         "ts": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
-        "r": random.random(),
+        "r": _secret_unit_float(),
     }
     bx_ua = _encode_baxia_token(fp)
     bx_umid = "T2gA" + secrets.token_urlsafe(30)

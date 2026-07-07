@@ -1,7 +1,9 @@
 """Poll Nertzh decisions endpoint and alert when a trade is imminent."""
 from __future__ import annotations
 
+import base64
 import json
+import os
 import subprocess
 import sys
 import time
@@ -58,23 +60,38 @@ def _log(line: str) -> None:
     print(line, flush=True)
 
 
+def _sanitize_toast_text(value: str, *, max_len: int) -> str:
+    cleaned = "".join(c for c in value[:max_len] if c.isprintable())
+    return cleaned.replace("\x00", "")
+
+
 def _notify_windows(title: str, message: str) -> None:
-    safe_title = title.replace("'", "''").replace('"', '`"')
-    safe_msg = message.replace("'", "''").replace('"', '`"')
     ps = (
         "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
         "ContentType = WindowsRuntime] | Out-Null; "
         "$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
         "[Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
         "$nodes = $t.GetElementsByTagName('text'); "
-        f"$nodes.Item(0).AppendChild($t.CreateTextNode('{safe_title}')) | Out-Null; "
-        f"$nodes.Item(1).AppendChild($t.CreateTextNode('{safe_msg}')) | Out-Null; "
+        "$nodes.Item(0).AppendChild($t.CreateTextNode($env:NERTZH_TOAST_TITLE)) | Out-Null; "
+        "$nodes.Item(1).AppendChild($t.CreateTextNode($env:NERTZH_TOAST_MSG)) | Out-Null; "
         "$toast = [Windows.UI.Notifications.ToastNotification]::new($t); "
         "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Nertzh').Show($toast)"
     )
+    encoded = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
+    env = os.environ.copy()
+    env["NERTZH_TOAST_TITLE"] = _sanitize_toast_text(title, max_len=120)
+    env["NERTZH_TOAST_MSG"] = _sanitize_toast_text(message, max_len=240)
     try:
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+            [
+                "powershell",
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-EncodedCommand",
+                encoded,
+            ],
+            env=env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception:

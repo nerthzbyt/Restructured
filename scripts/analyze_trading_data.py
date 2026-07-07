@@ -24,6 +24,8 @@ if str(SRC) not in sys.path:
 
 from utils import load_results_json as _store_load_results  # noqa: E402
 
+from path_safety import safe_path_under_project  # noqa: E402
+
 DEFAULT_RESULTS = ROOT / "logs" / "results.json"
 DEFAULT_JSONL = ROOT / "data" / "metrics_snapshots.jsonl"
 
@@ -105,7 +107,8 @@ def audit_combined(metrics: Dict[str, Any], tol: float = 0.05) -> Tuple[bool, fl
 
 
 def stream_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
-    with path.open("r", encoding="utf-8") as fh:
+    safe = safe_path_under_project(path, must_exist=True)
+    with safe.open("r", encoding="utf-8") as fh:
         for i, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
@@ -214,14 +217,15 @@ def analyze_jsonl(path: Path) -> Dict[str, Any]:
 
 
 def _load_results_json(path: Path, retries: int = 3) -> Dict[str, Any]:
+    safe = safe_path_under_project(path, must_exist=True)
     last_err: Optional[Exception] = None
-    log_dir = str(path.parent)
+    log_dir = str(safe.parent)
     for attempt in range(max(1, retries)):
         try:
             data = _store_load_results(log_dir)
             if isinstance(data, dict) and data:
                 return data
-            with path.open("r", encoding="utf-8") as fh:
+            with safe.open("r", encoding="utf-8") as fh:
                 data = json.load(fh)
             if isinstance(data, dict):
                 return data
@@ -391,17 +395,19 @@ def run_analysis(
     results_path: Path = DEFAULT_RESULTS,
     jsonl_path: Path = DEFAULT_JSONL,
 ) -> Dict[str, Any]:
+    results_safe = safe_path_under_project(results_path)
+    jsonl_safe = safe_path_under_project(jsonl_path)
     report: Dict[str, Any] = {
         "generated_at": datetime.now().astimezone().isoformat(),
         "project_root": str(ROOT),
     }
-    if results_path.exists():
-        report["results"] = analyze_results(results_path)
+    if results_safe.exists():
+        report["results"] = analyze_results(results_safe)
     else:
-        report["results"] = {"error": "missing_file", "path": str(results_path)}
+        report["results"] = {"error": "missing_file", "path": str(results_safe)}
 
-    if jsonl_path.exists():
-        report["metrics_snapshots"] = analyze_jsonl(jsonl_path)
+    if jsonl_safe.exists():
+        report["metrics_snapshots"] = analyze_jsonl(jsonl_safe)
     else:
         report["metrics_snapshots"] = {"error": "missing_file", "path": str(jsonl_path)}
 
@@ -424,11 +430,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--out", default="", help="Ruta salida JSON (opcional)")
     args = ap.parse_args(argv)
 
-    report = run_analysis(Path(args.results), Path(args.jsonl))
+    report = run_analysis(
+        safe_path_under_project(Path(args.results)),
+        safe_path_under_project(Path(args.jsonl)),
+    )
     text = json.dumps(report, ensure_ascii=False, indent=2)
 
     if args.out:
-        out_path = Path(args.out)
+        out_path = safe_path_under_project(Path(args.out))
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(text, encoding="utf-8")
         print(f"Reporte guardado: {out_path}")

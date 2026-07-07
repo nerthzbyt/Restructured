@@ -1,9 +1,15 @@
 """Aplica parches de factorización/cooldown/TP-SL a Nertzh.py y symbols.py."""
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-NERTZH = ROOT / "src" / "Nertzh.py"
-SYMBOLS = ROOT / "nertz_engine" / "engine" / "symbols.py"
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
+
+from path_safety import safe_path_under_project  # noqa: E402
+
+NERTZH = safe_path_under_project(ROOT / "src" / "Nertzh.py")
+SYMBOLS = safe_path_under_project(ROOT / "nertz_engine" / "engine" / "symbols.py")
 
 
 def patch_symbols():
