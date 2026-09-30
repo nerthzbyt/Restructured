@@ -13,8 +13,10 @@ Motor de trading cuantitativo para **Bybit Spot** con agente autónomo **NerT AI
 │  NerT_AI_PRO (FastAPI Agent)                                    │
 │  ReAct · Qwen Desktop/DashScope · MCP Bybit · Memoria SQLite    │
 ├─────────────────────────────────────────────────────────────────┤
-│  src/ — Motor principal                                         │
-│  Nertzh.py · utils.py (métricas) · optimizer.py · bybit_v5.py   │
+│  src/ — Motor (monolito modular, un proceso)                    │
+│  settings (registro único) · signal_engine · utils (métricas)   │
+│  nertz_core/engine: core · market_data · orders · tpsl ·        │
+│                     automation · reporting  + api/ routers      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Bybit V5 REST + WebSocket (Spot)                               │
 └─────────────────────────────────────────────────────────────────┘
@@ -32,10 +34,12 @@ source .venv/bin/activate       # Linux / macOS
 pip install -r requirements.txt
 cp .env.example .env
 
-# Configurar (.env)
+# Configurar (.env) — todas las claves documentadas en .env.example
+# (generado desde src/settings.py; cambios en caliente: POST /api/config/update)
 BYBIT_API_KEY=...
 BYBIT_API_SECRET=...
-BYBIT_ENV=demo                  # demo | mainnet
+BYBIT_ENV=demo                  # demo | mainnet | testnet
+SYMBOL=BTCUSDT,XRPUSDT          # cualquier par spot de Bybit
 LLM_BACKEND=qwen_desktop        # qwen_desktop | openai_compat | ollama
 
 # Motor de trading
@@ -52,6 +56,7 @@ Abre `http://127.0.0.1:8787` para la consola del agente (tema negro profesional)
 | Sección | Descripción |
 |---------|-------------|
 | [Introducción v5](docs/v5/introduction.md) | Visión general del sistema |
+| [Mapa del sistema](docs/v5/architecture.md) | Módulos, flujo de datos, persistencia, configuración y extensión |
 | [Indicadores](docs/v5/indicators.md) | PIO, EGM, ILD, ROL, OGM, TFI, MOM, Combined |
 | [Niveles de predicción](docs/v5/prediction-levels.md) | L0–L4 con datos validados |
 | [Perfiles de orden](docs/v5/order-profiles.md) | Market+IOC, Limit+GTC, scoring |
@@ -88,7 +93,7 @@ Sweep completo **2026-07-04** sobre **BTCUSDT** (fuente: Bybit exchange API):
 
 ```
 Restructured/
-├── src/                 # Motor Nertzh + métricas + Bybit v5
+├── src/                 # Motor: settings, signal_engine, utils, bybit_v5, nertz_core/
 ├── NerT_AI_PRO/         # Agente FastAPI + UI + Qwen
 ├── config/              # Configuración centralizada
 ├── tests/               # Tests del sistema

@@ -9,7 +9,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -18,6 +17,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from collections import deque
 
 import numpy as np
+
+from nertz_core.history import MetricHistory, z_score
+from signal_engine import raw_weights
 
 logger = logging.getLogger("NertzMetalEngine")
 _RESULTS_JSON_LOCK = threading.Lock()
@@ -92,7 +94,9 @@ class WelfordState:
         return float(z)
 
     @staticmethod
-    def history_values(history: list, key: str) -> List[float]:
+    def history_values(history: Any, key: str) -> List[float]:
+        if isinstance(history, MetricHistory):
+            return history.column(key).tolist()
         out: List[float] = []
         for h in history or []:
             if not isinstance(h, dict):
@@ -723,6 +727,9 @@ def load_metrics_raw_history_from_jsonl(
                     "rol": float(metrics.get("rol_raw", 0.0) or 0.0),
                     "ogm": float(metrics.get("ogm_raw", 0.0) or 0.0),
                     "mom_raw": float(metrics.get("mom_raw", 0.0) or 0.0),
+                    "tfi_raw": float(
+                        metrics.get("tfi_raw", metrics.get("recent_trades_imbalance_qty_pct", 0.0)) or 0.0
+                    ),
                     "asymmetry": float(metrics.get("asymmetry", 0.0) or 0.0),
                     "spread_pct": float(metrics.get("spread_pct", 0.0) or 0.0),
                 }
@@ -1201,6 +1208,20 @@ def calculate_discovery_metrics(
     }
 
 
+def _param(source: Any, key: str, default: float) -> float:
+    """Lee un parámetro numérico respetando 0 explícito (sin el patrón ``x or default``)."""
+    if not isinstance(source, dict):
+        return float(default)
+    v = source.get(key)
+    if v is None:
+        return float(default)
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    return fv if math.isfinite(fv) else float(default)
+
+
 def calculate_metrics(
     candle_data: List[Dict[str, Any]],
     orderbook_data: Dict[str, Any],
@@ -1367,9 +1388,9 @@ def calculate_metrics(
             bid_notional_sum_k + ask_notional_sum_k + 1e-12
         )
 
-        lambda_ = float(ticker_data.get("orderbook_lambda", 0.03) or 0.03)
-        pct_band = float(ticker_data.get("orderbook_pct_band", 0.015) or 0.015)
-        target_move = float(ticker_data.get("ild_target_move", 0.002) or 0.002)
+        lambda_ = _param(ticker_data, "orderbook_lambda", 0.03)
+        pct_band = _param(ticker_data, "orderbook_pct_band", 0.015)
+        target_move = _param(ticker_data, "ild_target_move", 0.002)
 
         bids: List[Tuple[float, float]] = []
         asks: List[Tuple[float, float]] = []
@@ -1384,14 +1405,13 @@ def calculate_metrics(
             bids = bids_in
             asks = asks_in
 
+        _exp = math.exp
         bid_w_sum = 0.0
         ask_w_sum = 0.0
         for p, q in bids:
-            dist = max(0.0, mid - p)
-            bid_w_sum += q * float(np.exp(-lambda_ * dist))
+            bid_w_sum += q * _exp(-lambda_ * max(0.0, mid - p))
         for p, q in asks:
-            dist = max(0.0, p - mid)
-            ask_w_sum += q * float(np.exp(-lambda_ * dist))
+            ask_w_sum += q * _exp(-lambda_ * max(0.0, p - mid))
 
         pio_raw = bid_w_sum - ask_w_sum
         weighted_liquidity = bid_w_sum + ask_w_sum
@@ -1460,16 +1480,22 @@ def calculate_metrics(
         except Exception:
             rol_raw = 0.0
 
-        history = ticker_data.get("metric_history") or []
-        if not isinstance(history, (list, deque)):
+        history = ticker_data.get("metric_history")
+        if history is None:
+            history = []
+        if not isinstance(history, (list, deque, MetricHistory)):
             history = []
 
-        def _z(current: float, key: str) -> float:
-            return WelfordState.z_from_window(
-                WelfordState.history_values(history, key),
-                current,
-                min_count=5,
-            )
+        if isinstance(history, MetricHistory):
+            def _z(current: float, key: str) -> float:
+                return z_score(history.column(key), current, min_count=5)
+        else:
+            def _z(current: float, key: str) -> float:
+                return WelfordState.z_from_window(
+                    WelfordState.history_values(history, key),
+                    current,
+                    min_count=5,
+                )
 
         pio_z = _z(pio_raw, "pio")
         ild_z = _z(ild_raw, "ild")
@@ -1482,28 +1508,19 @@ def calculate_metrics(
         egm_raw = (pio_z * (1.0 + abs(asymmetry))) + bonus
         egm_z = _z(egm_raw, "egm")
         trades_metrics = compute_recent_trades_metrics(recent_trades, window_n=10)
-        tfi_z = _z(float((trades_metrics or {}).get("imbalance_qty_pct") or 0.0), "tfi_raw")
+        tfi_raw = float((trades_metrics or {}).get("imbalance_qty_pct") or 0.0)
+        tfi_z = _z(tfi_raw, "tfi_raw")
 
-        cw = (
-            ticker_data.get("combined_weights")
-            if isinstance(ticker_data, dict)
-            else None
-        )
-        if not isinstance(cw, dict):
-            cw = {}
-        w_pio = float(cw.get("pio", 0.25) or 0.25)
-        w_tfi = float(cw.get("tfi", 0.25) or 0.25)
-        w_egm = float(cw.get("egm", 0.30) or 0.30)
-        w_ild = float(cw.get("ild", -0.15) or -0.15)
-        w_rol = float(cw.get("rol", 0.10) or 0.10)
-        w_ogm = float(cw.get("ogm", 0.05) or 0.05)
-        w_mom = float(cw.get("mom", 0.16) or 0.16)
-        w_scale = float(cw.get("scale", 10.0) or 10.0)
-        weights = [w_pio, w_egm, w_ild, w_rol, w_ogm, w_mom, w_tfi, w_scale]
-        if not np.isfinite(weights).all():
-            w_pio, w_egm, w_ild, w_rol, w_ogm, w_mom, w_tfi, w_scale = (
-                0.25, 0.30, -0.15, 0.10, 0.05, 0.16, 0.25, 10.0,
-            )
+        cw = ticker_data.get("combined_weights") if isinstance(ticker_data, dict) else None
+        weights = raw_weights(cw if isinstance(cw, dict) else None)
+        w_pio = weights["pio"]
+        w_egm = weights["egm"]
+        w_ild = weights["ild"]
+        w_rol = weights["rol"]
+        w_ogm = weights["ogm"]
+        w_mom = weights["mom"]
+        w_tfi = weights["tfi"]
+        w_scale = weights["scale"]
 
         combined_z_micro = (
             w_pio * pio_z + w_egm * egm_z + w_ild * ild_z
@@ -1561,20 +1578,20 @@ def calculate_metrics(
         combined = float(combined_z * float(w_scale))
 
         imb_vals: List[float] = []
-        if isinstance(history, deque):
-            start = max(0, len(history) - 20)
-            history_tail = itertools.islice(history, start, None)
-        elif isinstance(history, list):
-            history_tail = history[-20:]
+        if isinstance(history, MetricHistory):
+            imb_vals = history.tail("asymmetry", 20)
         else:
-            history_tail = []
-        for h in history_tail:
-            if not isinstance(h, dict):
-                continue
-            v = h.get("asymmetry")
-            vnum = _tsm_to_number(v)
-            if vnum is not None:
-                imb_vals.append(float(vnum))
+            if isinstance(history, deque):
+                start = max(0, len(history) - 20)
+                history_tail = itertools.islice(history, start, None)
+            else:
+                history_tail = history[-20:]
+            for h in history_tail:
+                if not isinstance(h, dict):
+                    continue
+                vnum = _tsm_to_number(h.get("asymmetry"))
+                if vnum is not None:
+                    imb_vals.append(float(vnum))
         imb_vals.append(float(asymmetry))
         imbalance20 = (
             float(np.mean(np.array(imb_vals, dtype=np.float64)))
@@ -1728,9 +1745,10 @@ def calculate_metrics(
         formulas_dict = formulas if isinstance(formulas, dict) else {}
         derived = eval_tsm_formulas(formulas_dict, ctx)
 
-        valid_history_count = sum(
-            1 for h in history if isinstance(h, dict)
-        )
+        if isinstance(history, MetricHistory):
+            valid_history_count = len(history)
+        else:
+            valid_history_count = sum(1 for h in history if isinstance(h, dict))
         metrics_calibrated = valid_history_count >= 4
 
         logger.debug(
@@ -1801,6 +1819,8 @@ def calculate_metrics(
             "ema_diff_rel": float(ema_diff_rel),
             "mom": float(mom_z),
             "mom_raw": float(mom_raw),
+            "tfi_raw": float(tfi_raw),
+            "tfi_z": float(tfi_z),
             "cbd_n20": float(cbd_n20),
             **(
                 {
@@ -2396,7 +2416,11 @@ def calculate_tp_sl(
     tp_factor: float = 1.5,
     sl_factor: float = 1.0,
 ) -> Tuple[float, float]:
-    """Calcula Take Profit y Stop Loss dinámicos basados en volatilidad."""
+    """Calcula Take Profit y Stop Loss dinámicos basados en volatilidad.
+
+    No redondea: el llamador cuantiza al ``tick_size`` real del instrumento
+    (redondear a 2 decimales rompía pares de precio bajo como XRPUSDT).
+    """
     try:
         price_range = volatility * price
         if action.lower() == "buy":
@@ -2405,7 +2429,7 @@ def calculate_tp_sl(
         else:  # sell
             tp = price - (price_range * tp_factor)
             sl = price + (price_range * sl_factor)
-        return round(tp, 2), round(sl, 2)
+        return float(tp), float(sl)
     except Exception as e:
         logger.error(f"❌ Error en calculate_tp_sl: {e}")
         return 0.0, 0.0

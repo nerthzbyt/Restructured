@@ -6,30 +6,93 @@ Usado por Nertzh (runtime), optimizer (backtest) y NerT_AI_PRO (agente).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
-# --- Referencias calibradas (validación exchange 2026-07-04) ---
-BASE_VOL_REF = 0.002
-RVOL_MIN = 5e-6
-TRADE_AGE_MAX_S = 4.0
-TFI_VETO_EXTREME = 0.8
-TFI_ALIGN_OPTIMAL = 0.8
-TFI_CHOP_BAND = 0.3
-VOL_CHOP_MAX = 0.0004
-VOL_OPTIMAL_MIN = 0.0008
-COMBINED_Z_OPTIMAL = 1.2
-COMBINED_Z_CHOP = 0.8
-MOM_BREAKOUT = 0.5
-TFI_BREAKOUT = 0.9
-PIO_SPOOF_Z_MIN = 0.8
-MICROPRICE_VETO_BPS = 0.003
-SPREAD_VETO_MULT = 1.5
 
-_WEIGHT_FALLBACK = (0.25, 0.30, -0.15, 0.10, 0.05, 0.16, 0.25)
+@dataclass(frozen=True)
+class SignalParams:
+    """Parámetros del motor de señal (defaults calibrados, validación exchange 2026-07-04).
+
+    Se pueden sobreescribir sin tocar código vía ``SIGNAL_PARAMS_JSON`` en .env,
+    p.ej. ``{"rvol_min": 1e-5, "trade_age_max_s": 6}``.
+    """
+
+    base_vol_ref: float = 0.002
+    vol_scale_max: float = 2.0
+    rvol_min: float = 5e-6
+    trade_age_max_s: float = 4.0
+    tfi_veto_extreme: float = 0.8
+    tfi_align_optimal: float = 0.8
+    tfi_chop_band: float = 0.3
+    vol_chop_max: float = 0.0004
+    vol_optimal_min: float = 0.0008
+    combined_z_optimal: float = 1.2
+    combined_z_chop: float = 0.8
+    mom_breakout: float = 0.5
+    tfi_breakout: float = 0.9
+    pio_spoof_z_min: float = 0.8
+    combined_spoof_abs: float = 6.0
+    spoof_rvol_mult: float = 10.0
+    microprice_veto_bps: float = 0.003
+    spread_veto_mult: float = 1.5
+    mom_confirm: float = 0.05
+    threshold_min: float = 1.0
+    threshold_max: float = 15.0
+    hold_band_min: float = 0.5
+    hold_band_max: float = 6.0
+    weight_scale_min: float = 1.0
+    weight_scale_max: float = 25.0
+
+    @classmethod
+    def from_overrides(cls, overrides: Optional[Mapping[str, Any]] = None) -> "SignalParams":
+        if not overrides:
+            return DEFAULT_SIGNAL_PARAMS
+        known = {f.name for f in fields(cls)}
+        unknown = sorted(set(overrides) - known)
+        if unknown:
+            raise ValueError(f"SignalParams: parámetros desconocidos {unknown}")
+        return replace(DEFAULT_SIGNAL_PARAMS, **{k: float(v) for k, v in overrides.items()})
+
+    def as_dict(self) -> Dict[str, float]:
+        return asdict(self)
+
+
+DEFAULT_SIGNAL_PARAMS = SignalParams()
+
+# Alias de compatibilidad (módulos externos importan estas constantes).
+BASE_VOL_REF = DEFAULT_SIGNAL_PARAMS.base_vol_ref
+RVOL_MIN = DEFAULT_SIGNAL_PARAMS.rvol_min
+TRADE_AGE_MAX_S = DEFAULT_SIGNAL_PARAMS.trade_age_max_s
+TFI_VETO_EXTREME = DEFAULT_SIGNAL_PARAMS.tfi_veto_extreme
+TFI_ALIGN_OPTIMAL = DEFAULT_SIGNAL_PARAMS.tfi_align_optimal
+TFI_CHOP_BAND = DEFAULT_SIGNAL_PARAMS.tfi_chop_band
+VOL_CHOP_MAX = DEFAULT_SIGNAL_PARAMS.vol_chop_max
+VOL_OPTIMAL_MIN = DEFAULT_SIGNAL_PARAMS.vol_optimal_min
+COMBINED_Z_OPTIMAL = DEFAULT_SIGNAL_PARAMS.combined_z_optimal
+COMBINED_Z_CHOP = DEFAULT_SIGNAL_PARAMS.combined_z_chop
+MOM_BREAKOUT = DEFAULT_SIGNAL_PARAMS.mom_breakout
+TFI_BREAKOUT = DEFAULT_SIGNAL_PARAMS.tfi_breakout
+PIO_SPOOF_Z_MIN = DEFAULT_SIGNAL_PARAMS.pio_spoof_z_min
+MICROPRICE_VETO_BPS = DEFAULT_SIGNAL_PARAMS.microprice_veto_bps
+SPREAD_VETO_MULT = DEFAULT_SIGNAL_PARAMS.spread_veto_mult
+
+# Pesos crudos por defecto (orden: pio, egm, ild, rol, ogm, mom, tfi) y escala.
+RAW_DEFAULT_WEIGHTS: Dict[str, float] = {
+    "pio": 0.25,
+    "egm": 0.30,
+    "ild": -0.15,
+    "rol": 0.10,
+    "ogm": 0.05,
+    "mom": 0.16,
+    "tfi": 0.25,
+    "scale": 10.0,
+}
+_WEIGHT_KEYS = ("pio", "egm", "ild", "rol", "ogm", "mom", "tfi")
+_WEIGHT_FALLBACK = tuple(RAW_DEFAULT_WEIGHTS[k] for k in _WEIGHT_KEYS)
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -69,17 +132,19 @@ class Thresholds:
             combined_hold_band=float(self.combined_hold_band),
         )
 
-    def scaled_by_volatility(self, volatility: float) -> Thresholds:
+    def scaled_by_volatility(
+        self, volatility: float, params: SignalParams = DEFAULT_SIGNAL_PARAMS
+    ) -> Thresholds:
         th = self.symmetrized()
         vol = _safe_float(volatility, 0.0)
-        if vol <= 0 or vol >= BASE_VOL_REF:
+        if vol <= 0 or vol >= params.base_vol_ref:
             return th
-        scale = float((BASE_VOL_REF / vol) ** 0.5)
-        scale = max(1.0, min(2.0, scale))
+        scale = float((params.base_vol_ref / vol) ** 0.5)
+        scale = max(1.0, min(params.vol_scale_max, scale))
         return Thresholds(
             combined_buy_threshold=th.combined_buy_threshold * scale,
             combined_sell_threshold=th.combined_sell_threshold * scale,
-            combined_hold_band=th.combined_hold_band * min(2.0, scale),
+            combined_hold_band=th.combined_hold_band * min(params.vol_scale_max, scale),
         )
 
 
@@ -110,14 +175,8 @@ class CombinedWeights:
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> CombinedWeights:
         d = data if isinstance(data, dict) else {}
         return cls.normalize(
-            pio=_safe_float(d.get("pio"), _WEIGHT_FALLBACK[0]),
-            egm=_safe_float(d.get("egm"), _WEIGHT_FALLBACK[1]),
-            ild=_safe_float(d.get("ild"), _WEIGHT_FALLBACK[2]),
-            rol=_safe_float(d.get("rol"), _WEIGHT_FALLBACK[3]),
-            ogm=_safe_float(d.get("ogm"), _WEIGHT_FALLBACK[4]),
-            mom=_safe_float(d.get("mom"), _WEIGHT_FALLBACK[5]),
-            tfi=_safe_float(d.get("tfi"), _WEIGHT_FALLBACK[6]),
-            scale=_safe_float(d.get("scale"), 10.0),
+            **{k: _safe_float(d.get(k), RAW_DEFAULT_WEIGHTS[k]) for k in _WEIGHT_KEYS},
+            scale=_safe_float(d.get("scale"), RAW_DEFAULT_WEIGHTS["scale"]),
         )
 
     @classmethod
@@ -141,7 +200,8 @@ class CombinedWeights:
             vec = np.array(_WEIGHT_FALLBACK, dtype=np.float64)
             denom = float(np.sum(np.abs(vec)))
         vec = vec / denom
-        scale = float(max(1.0, min(25.0, scale)))
+        p = DEFAULT_SIGNAL_PARAMS
+        scale = float(max(p.weight_scale_min, min(p.weight_scale_max, scale)))
         return cls(
             pio=float(vec[0]),
             egm=float(vec[1]),
@@ -154,16 +214,27 @@ class CombinedWeights:
         )
 
 
-DEFAULT_COMBINED_WEIGHTS = CombinedWeights.normalize(
-    pio=0.25,
-    egm=0.30,
-    ild=-0.15,
-    rol=0.10,
-    ogm=0.05,
-    mom=0.16,
-    tfi=0.25,
-    scale=10.0,
-)
+DEFAULT_COMBINED_WEIGHTS = CombinedWeights.normalize(**RAW_DEFAULT_WEIGHTS)
+
+
+def raw_weights(data: Optional[Mapping[str, Any]] = None) -> Dict[str, float]:
+    """Pesos crudos (sin normalizar) con fallback por componente.
+
+    A diferencia del patrón ``x or default``, un peso 0.0 explícito se respeta.
+    """
+    out = dict(RAW_DEFAULT_WEIGHTS)
+    if isinstance(data, Mapping):
+        for k in out:
+            v = data.get(k)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(fv):
+                out[k] = fv
+    return out
 
 
 def symmetrize_threshold_values(
@@ -226,36 +297,43 @@ def normalize_signal_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
-def is_spoof_trap(sig: Dict[str, float]) -> bool:
+def is_spoof_trap(sig: Dict[str, float], params: SignalParams = DEFAULT_SIGNAL_PARAMS) -> bool:
     """PIO/combined fuerte en un sentido con TFI agresivo opuesto (spoofing)."""
+    p = params
     pio = sig["pio"]
     tfi = sig["tfi"]
     combined = sig["combined"]
     rvol = sig["rvol"]
 
-    bullish_book = pio >= PIO_SPOOF_Z_MIN or combined >= 6.0
-    bearish_book = pio <= -PIO_SPOOF_Z_MIN or combined <= -6.0
+    bullish_book = pio >= p.pio_spoof_z_min or combined >= p.combined_spoof_abs
+    bearish_book = pio <= -p.pio_spoof_z_min or combined <= -p.combined_spoof_abs
 
-    if bullish_book and tfi <= -TFI_VETO_EXTREME:
-        return rvol < RVOL_MIN * 10 or abs(pio) >= PIO_SPOOF_Z_MIN
-    if bearish_book and tfi >= TFI_VETO_EXTREME:
-        return rvol < RVOL_MIN * 10 or abs(pio) >= PIO_SPOOF_Z_MIN
+    if bullish_book and tfi <= -p.tfi_veto_extreme:
+        return rvol < p.rvol_min * p.spoof_rvol_mult or abs(pio) >= p.pio_spoof_z_min
+    if bearish_book and tfi >= p.tfi_veto_extreme:
+        return rvol < p.rvol_min * p.spoof_rvol_mult or abs(pio) >= p.pio_spoof_z_min
     return False
 
 
-def microprice_conflicts_signal(sig: Dict[str, float], side: str) -> bool:
+def microprice_conflicts_signal(
+    sig: Dict[str, float], side: str, params: SignalParams = DEFAULT_SIGNAL_PARAMS
+) -> bool:
+    veto = params.microprice_veto_bps
     offset = sig["microprice_offset_bps"]
-    if abs(offset) < MICROPRICE_VETO_BPS:
+    if abs(offset) < veto:
         return False
-    if side == "buy" and offset < -MICROPRICE_VETO_BPS:
+    if side == "buy" and offset < -veto:
         return True
-    if side == "sell" and offset > MICROPRICE_VETO_BPS:
+    if side == "sell" and offset > veto:
         return True
     return False
 
 
-def classify_market_state(sig: Dict[str, float], th: Thresholds) -> MarketState:
-    if is_spoof_trap(sig):
+def classify_market_state(
+    sig: Dict[str, float], th: Thresholds, params: SignalParams = DEFAULT_SIGNAL_PARAMS
+) -> MarketState:
+    p = params
+    if is_spoof_trap(sig, p):
         return MarketState.TOXIC
 
     vol = sig["volatility"]
@@ -264,42 +342,42 @@ def classify_market_state(sig: Dict[str, float], th: Thresholds) -> MarketState:
     mom = sig["mom"]
 
     if (
-        mom >= MOM_BREAKOUT
-        and tfi >= TFI_BREAKOUT
+        mom >= p.mom_breakout
+        and tfi >= p.tfi_breakout
         and sig["ema_diff_rel"] > 0
     ) or (
-        mom <= -MOM_BREAKOUT
-        and tfi <= -TFI_BREAKOUT
+        mom <= -p.mom_breakout
+        and tfi <= -p.tfi_breakout
         and sig["ema_diff_rel"] < 0
     ):
         return MarketState.BREAKOUT
 
-    if vol > 0 and vol < VOL_CHOP_MAX and abs(tfi) < TFI_CHOP_BAND:
+    if vol > 0 and vol < p.vol_chop_max and abs(tfi) < p.tfi_chop_band:
         return MarketState.CHOP
 
     if (
-        cz >= COMBINED_Z_OPTIMAL
-        and vol >= VOL_OPTIMAL_MIN
-        and sig["rvol"] >= RVOL_MIN
+        cz >= p.combined_z_optimal
+        and vol >= p.vol_optimal_min
+        and sig["rvol"] >= p.rvol_min
         and (
-            (sig["combined"] >= th.combined_buy_threshold and tfi >= TFI_ALIGN_OPTIMAL)
-            or (sig["combined"] <= th.combined_sell_threshold and tfi <= -TFI_ALIGN_OPTIMAL)
+            (sig["combined"] >= th.combined_buy_threshold and tfi >= p.tfi_align_optimal)
+            or (sig["combined"] <= th.combined_sell_threshold and tfi <= -p.tfi_align_optimal)
         )
     ):
         return MarketState.OPTIMAL
 
-    if cz < COMBINED_Z_CHOP and abs(tfi) < TFI_CHOP_BAND:
+    if cz < p.combined_z_chop and abs(tfi) < p.tfi_chop_band:
         return MarketState.CHOP
 
     return MarketState.NEUTRAL
 
 
-def _classic_buy(sig: Dict[str, float]) -> bool:
-    return sig["pio"] > 0 and sig["egm"] > 0 and sig["mom"] > 0.05
+def _classic_buy(sig: Dict[str, float], mom_confirm: float = DEFAULT_SIGNAL_PARAMS.mom_confirm) -> bool:
+    return sig["pio"] > 0 and sig["egm"] > 0 and sig["mom"] > mom_confirm
 
 
-def _classic_sell(sig: Dict[str, float]) -> bool:
-    return sig["pio"] < 0 and sig["egm"] < 0 and sig["mom"] < -0.05
+def _classic_sell(sig: Dict[str, float], mom_confirm: float = DEFAULT_SIGNAL_PARAMS.mom_confirm) -> bool:
+    return sig["pio"] < 0 and sig["egm"] < 0 and sig["mom"] < -mom_confirm
 
 
 def _ok_v2_buy(sig: Dict[str, float]) -> bool:
@@ -318,11 +396,11 @@ def _ok_v2_sell(sig: Dict[str, float]) -> bool:
     )
 
 
-def _tfi_allows(side: str, tfi: float) -> bool:
+def _tfi_allows(side: str, tfi: float, veto: float = DEFAULT_SIGNAL_PARAMS.tfi_veto_extreme) -> bool:
     if side == "buy":
-        return tfi >= -TFI_VETO_EXTREME
+        return tfi >= -veto
     if side == "sell":
-        return tfi <= TFI_VETO_EXTREME
+        return tfi <= veto
     return True
 
 
@@ -332,11 +410,14 @@ def evaluate_signal(
     buy_th: float,
     sell_th: float,
     hold_band: float,
+    params: Optional[SignalParams] = None,
 ) -> Dict[str, Any]:
+    p = params or DEFAULT_SIGNAL_PARAMS
+    mc = p.mom_confirm
     sig = normalize_signal_metrics(metrics)
     raw_th = symmetrize_threshold_values(buy_th, sell_th, hold_band)
-    th = raw_th.scaled_by_volatility(sig["volatility"])
-    state = classify_market_state(sig, th)
+    th = raw_th.scaled_by_volatility(sig["volatility"], p)
+    state = classify_market_state(sig, th, p)
     blockers: List[str] = []
 
     if not sig["data_ok"] or not sig["metrics_calibrated"]:
@@ -351,30 +432,30 @@ def evaluate_signal(
     if abs(sig["combined"]) < th.combined_hold_band:
         blockers.append("combined_dentro_hold_band")
     elif sig["combined"] >= th.combined_buy_threshold:
-        confirmed = _classic_buy(sig) or (_ok_v2_buy(sig) and sig["mom"] > 0.05)
+        confirmed = _classic_buy(sig, mc) or (_ok_v2_buy(sig) and sig["mom"] > mc)
         if not confirmed:
-            if sig["mom"] <= 0.05:
-                blockers.append("buy_requiere_mom_gt_0.05")
-            if not _classic_buy(sig) and not _ok_v2_buy(sig):
+            if sig["mom"] <= mc:
+                blockers.append(f"buy_requiere_mom_gt_{mc:g}")
+            if not _classic_buy(sig, mc) and not _ok_v2_buy(sig):
                 blockers.append("buy_sin_confirmacion_pio_egm_o_v2")
-        elif not _tfi_allows("buy", sig["tfi"]):
+        elif not _tfi_allows("buy", sig["tfi"], p.tfi_veto_extreme):
             blockers.append("tfi_veto_extremo_contra_compra")
-        elif microprice_conflicts_signal(sig, "buy"):
+        elif microprice_conflicts_signal(sig, "buy", p):
             blockers.append("microprice_offset_contra_compra")
         elif state in {MarketState.TOXIC, MarketState.CHOP}:
             pass
         else:
             decision = "buy"
     elif sig["combined"] <= th.combined_sell_threshold:
-        confirmed = _classic_sell(sig) or (_ok_v2_sell(sig) and sig["mom"] < -0.05)
+        confirmed = _classic_sell(sig, mc) or (_ok_v2_sell(sig) and sig["mom"] < -mc)
         if not confirmed:
-            if sig["mom"] >= -0.05:
-                blockers.append("sell_requiere_mom_lt_-0.05")
-            if not _classic_sell(sig) and not _ok_v2_sell(sig):
+            if sig["mom"] >= -mc:
+                blockers.append(f"sell_requiere_mom_lt_-{mc:g}")
+            if not _classic_sell(sig, mc) and not _ok_v2_sell(sig):
                 blockers.append("sell_sin_confirmacion_pio_egm_o_v2")
-        elif not _tfi_allows("sell", sig["tfi"]):
+        elif not _tfi_allows("sell", sig["tfi"], p.tfi_veto_extreme):
             blockers.append("tfi_veto_extremo_contra_venta")
-        elif microprice_conflicts_signal(sig, "sell"):
+        elif microprice_conflicts_signal(sig, "sell", p):
             blockers.append("microprice_offset_contra_venta")
         elif state in {MarketState.TOXIC, MarketState.CHOP}:
             pass
@@ -413,10 +494,10 @@ def evaluate_signal(
         "confirmations": {
             "ok_v2_buy": _ok_v2_buy(sig),
             "ok_v2_sell": _ok_v2_sell(sig),
-            "classic_buy": _classic_buy(sig),
-            "classic_sell": _classic_sell(sig),
-            "tfi_aligned_buy": sig["tfi"] >= TFI_ALIGN_OPTIMAL,
-            "tfi_aligned_sell": sig["tfi"] <= -TFI_ALIGN_OPTIMAL,
+            "classic_buy": _classic_buy(sig, mc),
+            "classic_sell": _classic_sell(sig, mc),
+            "tfi_aligned_buy": sig["tfi"] >= p.tfi_align_optimal,
+            "tfi_aligned_sell": sig["tfi"] <= -p.tfi_align_optimal,
         },
     }
 
@@ -427,12 +508,14 @@ def determine_decision_from_metrics(
     buy_th: float = 4.5,
     sell_th: float = -4.5,
     hold_band: float = 3.0,
+    params: Optional[SignalParams] = None,
 ) -> str:
     return evaluate_signal(
         metrics,
         buy_th=buy_th,
         sell_th=sell_th,
         hold_band=hold_band,
+        params=params,
     )["decision"]
 
 
@@ -440,36 +523,52 @@ def check_execution_gates(
     metrics: Dict[str, Any],
     *,
     spread_avg_bps: float = 1.5,
+    params: Optional[SignalParams] = None,
 ) -> Tuple[bool, Optional[str]]:
     """True = permitido ejecutar. Breakouts con alto rvol no se penalizan."""
+    p = params or DEFAULT_SIGNAL_PARAMS
     sig = normalize_signal_metrics(metrics)
     spread_bps = sig["spread_bps"]
     rvol = sig["rvol"]
     last_age = sig["recent_trades_last_trade_age_s"]
 
-    if spread_bps > spread_avg_bps * SPREAD_VETO_MULT:
+    if spread_bps > spread_avg_bps * p.spread_veto_mult:
         return False, "spread_expandido"
-    if rvol < RVOL_MIN:
+    if rvol < p.rvol_min:
         return False, "rvol_bajo_sin_participacion"
-    if last_age >= 0 and last_age > TRADE_AGE_MAX_S:
+    if last_age >= 0 and last_age > p.trade_age_max_s:
         return False, "trade_age_stale"
-    if is_spoof_trap(sig):
+    if is_spoof_trap(sig, p):
         return False, "spoof_trap"
     return True, None
 
 
+def clamp_thresholds(
+    magnitude: float, hold: float, params: SignalParams = DEFAULT_SIGNAL_PARAMS
+) -> Thresholds:
+    """Umbrales simétricos acotados a los rangos operativos de ``params``."""
+    mag = float(max(params.threshold_min, min(params.threshold_max, magnitude)))
+    hb = float(max(params.hold_band_min, min(params.hold_band_max, hold)))
+    return Thresholds(mag, -mag, hb)
+
+
 def relax_thresholds_symmetric(
-    buy_th: float, sell_th: float, hold_band: float, factor: float = 0.85
+    buy_th: float,
+    sell_th: float,
+    hold_band: float,
+    factor: float = 0.85,
+    params: SignalParams = DEFAULT_SIGNAL_PARAMS,
 ) -> Thresholds:
     th = symmetrize_threshold_values(buy_th, sell_th, hold_band)
     base = (abs(th.combined_buy_threshold) + abs(th.combined_sell_threshold)) / 2.0
-    new_base = max(1.0, min(15.0, base * factor))
-    new_hold = max(0.5, min(6.0, th.combined_hold_band * factor))
-    return Thresholds(new_base, -new_base, new_hold)
+    return clamp_thresholds(base * factor, th.combined_hold_band * factor, params)
 
 
 def blend_thresholds_symmetric(
-    current: Thresholds, target: Thresholds, alpha: float
+    current: Thresholds,
+    target: Thresholds,
+    alpha: float,
+    params: SignalParams = DEFAULT_SIGNAL_PARAMS,
 ) -> Thresholds:
     a = float(max(0.0, min(1.0, alpha)))
     cur = current.symmetrized()
@@ -478,6 +577,4 @@ def blend_thresholds_symmetric(
     base_tgt = (abs(tgt.combined_buy_threshold) + abs(tgt.combined_sell_threshold)) / 2.0
     new_base = (1.0 - a) * base_cur + a * base_tgt
     new_hold = (1.0 - a) * cur.combined_hold_band + a * tgt.combined_hold_band
-    new_base = max(1.0, min(15.0, new_base))
-    new_hold = max(0.5, min(6.0, new_hold))
-    return Thresholds(new_base, -new_base, new_hold)
+    return clamp_thresholds(new_base, new_hold, params)

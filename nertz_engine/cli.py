@@ -22,7 +22,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     uvicorn.run(
-        "src.Nertzh:app",
+        "Nertzh:app",
         host=args.host,
         port=args.port,
         reload=args.reload,
@@ -32,12 +32,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     _ensure_paths()
-    from src.settings import ConfigSettings
+    from nertz_core.runtime import default_config
 
-    config = ConfigSettings()
-    for key, value in sorted(vars(config).items()):
-        if key.startswith("_"):
-            continue
+    # as_dict() enmascara credenciales (antes se imprimían en claro).
+    for key, value in sorted(default_config().as_dict().items()):
         print(f"{key}={value}")
     return 0
 

@@ -2,6 +2,36 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/).
 
+## [5.2.0] — 2026-09-30
+
+Reestructuración de `src/` como monolito modular. Mapa completo en `docs/v5/architecture.md`.
+
+### Changed
+- `src/Nertzh.py` (6.186 líneas) queda como fachada; el motor vive en `src/nertz_core/` (engine en mixins por responsabilidad y routers FastAPI por dominio). Mismo proceso, mismas rutas API.
+- `src/settings.py`: registro único y tipado de configuración (~150 claves) con validación fail-fast, `update()` en caliente, overrides por símbolo (`SYMBOL_OVERRIDES_JSON`) y generación de `.env.example`. Se eliminan la lista blanca de símbolos, las URLs fijas y los `getattr(config, "X", default)`.
+- `signal_engine.SignalParams`: umbrales de señal configurables vía `SIGNAL_PARAMS_JSON` (defaults idénticos).
+- Tamaño de orden por nocional (`MAX_POSITION_NOTIONAL_PCT`, 10 % por defecto); `MAX_TRADE_SIZE`/`MIN_TRADE_SIZE` pasan a ser topes opcionales (0 = sin tope).
+- Soporte `BYBIT_ENV=testnet` y overrides de endpoints.
+
+### Added
+- `GET /config/schema`, `POST /config/update`, `POST /symbols/add`.
+- Tests: `tests/test_core_units.py`, `tests/test_engine_offline.py` (ciclo completo con un exchange simulado).
+
+### Fixed
+- PnL: las comisiones se restan sobre el nocional de entrada y de salida (antes reducían las pérdidas).
+- TP/SL virtual: ahora dispara y cierra la posición con una orden real; antes nunca disparaba y guardaba un % como PnL.
+- En live con TP/SL activo, el horizonte ya no marca `final` posiciones que siguen abiertas en el exchange.
+- Fills parciales cancelados conservan la posición ejecutada.
+- TFI entraba en el combined siempre como 0 (la historia no guardaba `tfi_raw`).
+- Un peso 0 explícito ya no se sustituye por el default; los pesos optimizados ya no se pierden con el siguiente ticker.
+- TP/SL cuantizados al tick real (antes `round(x, 2)`).
+- `AUTO_ENABLE_SECONDARY_SYSTEMS` ahora se respeta; `MAX_CONCURRENT_ORDERS` ahora se aplica.
+- DuckDB: `flush()` persiste toda la cola y se corrige una carrera que perdía registros.
+- `nertz status` ya no imprime la API secret.
+
+### Performance
+- Z-scores con historia columnar (≈6× más rápido por ciclo), libro de órdenes incremental, IO de results.json fuera del event loop, sync de órdenes solo para trades no ejecutados.
+
 ## [5.1.1] — 2026-07-07
 
 ### Documentación

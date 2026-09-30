@@ -91,12 +91,10 @@ class BybitClientUsageTests(unittest.TestCase):
             "BYBIT_API_SECRET": getattr(self._config, "BYBIT_API_SECRET", None),
             "BYBIT_ENV": getattr(self._config, "BYBIT_ENV", "mainnet"),
         }
-        self._saved_client = nertzh.BybitV5Client
 
     def tearDown(self):
         for k, v in self._saved.items():
             setattr(self._config, k, v)
-        nertzh.BybitV5Client = self._saved_client
 
     def test_unidad_bybit_client_deshabilitado(self):
         self._config.LIVE_TRADING_ENABLED = False
@@ -110,11 +108,9 @@ class BybitClientUsageTests(unittest.TestCase):
         self._config.BYBIT_API_KEY = "k"
         self._config.BYBIT_API_SECRET = "s"
         self._config.BYBIT_ENV = "demo"
-        nertzh.BybitV5Client = DummyBybitClient
-        engine = nertzh.NertzMetalEngine()
+        engine = nertzh.NertzMetalEngine(client_factory=DummyBybitClient)
         client = engine._bybit_client()
-        assert client is not None
-        self.assertIsNotNone(client)
+        self.assertIsInstance(client, DummyBybitClient)
         self.assertEqual(client.base_url, "https://api-demo.bybit.com")
 
     def test_unidad_bybit_client_mainnet(self):
@@ -122,11 +118,9 @@ class BybitClientUsageTests(unittest.TestCase):
         self._config.BYBIT_API_KEY = "k"
         self._config.BYBIT_API_SECRET = "s"
         self._config.BYBIT_ENV = "mainnet"
-        nertzh.BybitV5Client = DummyBybitClient
-        engine = nertzh.NertzMetalEngine()
+        engine = nertzh.NertzMetalEngine(client_factory=DummyBybitClient)
         client = engine._bybit_client()
-        assert client is not None
-        self.assertIsNotNone(client)
+        self.assertIsInstance(client, DummyBybitClient)
         self.assertEqual(client.base_url, "https://api.bybit.com")
 
 

@@ -23,12 +23,16 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m compileall -q scripts NerT_AI_PRO nertz_engine src_dev
-          python -m compileall -q src/Nertzh.py
+          python -m compileall -q scripts NerT_AI_PRO nertz_engine src_dev src
 
-      - name: Unit tests (signal engine)
+      - name: Config registry sanity (.env.example up to date)
         run: |
-          python -m unittest tests.test_signal_engine tests.test_dev_signal_lab -v
+          python src/settings.py --env-example > /tmp/env.generated
+          diff <(grep -v '^#' /tmp/env.generated | grep .) <(sed -n '/^# ===== exchange/,$p' .env.example | grep -v '^#' | grep .)
+
+      - name: Unit + offline integration tests
+        run: |
+          python -m unittest tests.test_signal_engine tests.test_dev_signal_lab tests.test_system tests.test_core_units tests.test_engine_offline -v
 
       - name: Security helper smoke tests
         run: |

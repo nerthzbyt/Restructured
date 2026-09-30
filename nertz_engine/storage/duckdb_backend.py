@@ -9,7 +9,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Sequence
 
@@ -138,6 +138,15 @@ class AsyncBatchWriter:
 
         async def _flush_pending(*, signal_done: bool = False) -> None:
             nonlocal pending
+            if signal_done or self._force_flush.is_set():
+                # flush() debe persistir todo lo encolado hasta ese momento, no solo el lote en curso.
+                while not self._queue.empty():
+                    queued = self._queue.get_nowait()
+                    if queued is not None:
+                        pending.append(queued)
+                    elif not self._running:
+                        self._queue.put_nowait(None)
+                        break
             if pending:
                 batch = pending
                 pending = []
@@ -165,15 +174,18 @@ class AsyncBatchWriter:
                             except asyncio.CancelledError:
                                 pass
 
+                # get_task puede completarse entre asyncio.wait y la cancelación: se
+                # comprueba su estado real para no perder el elemento ya extraído.
+                got_item = get_task.done() and not get_task.cancelled()
+                item = get_task.result() if got_item else None
+                if got_item and item is not None:
+                    pending.append(item)
+
                 if flush_task in done or self._force_flush.is_set():
                     await _flush_pending(signal_done=True)
-                    if get_task in done:
-                        item = get_task.result()
-                    else:
+                    if not got_item:
                         continue
-                elif get_task in done:
-                    item = get_task.result()
-                else:
+                elif not got_item:
                     await _flush_pending()
                     continue
 
@@ -181,8 +193,6 @@ class AsyncBatchWriter:
                     if not self._running:
                         break
                     continue
-
-                pending.append(item)
 
                 if len(pending) >= 256:
                     await _flush_pending()
@@ -567,6 +577,70 @@ class DuckDBBackend:
 
     async def fetch_recent(self, symbol: str, *, limit: int = 10) -> dict[str, Any]:
         return await asyncio.to_thread(self._fetch_recent_sync, symbol, int(limit))
+
+    # Métrica calculada -> clave cruda de la historia de z-scores del motor.
+    _HISTORY_KEYS = {
+        "pio_raw": "pio",
+        "ild_raw": "ild",
+        "egm_raw": "egm",
+        "rol_raw": "rol",
+        "ogm_raw": "ogm",
+        "mom_raw": "mom_raw",
+        "recent_trades_imbalance_qty_pct": "tfi_raw",
+        "asymmetry": "asymmetry",
+        "spread_pct": "spread_pct",
+    }
+
+    def _fetch_metric_history_sync(self, symbol: str, window_s: float, max_rows: int) -> list[dict[str, Any]]:
+        sym = str(symbol or "").strip().upper()
+        cutoff = time.time() - float(window_s)
+        with self._lock:
+            conn = self._ensure_rw_connection_locked()
+            rows = conn.execute(
+                """
+                SELECT timestamp, metrics
+                FROM metric_snapshots
+                WHERE symbol = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                [sym, int(max_rows)],
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for ts_raw, metrics_raw in rows:
+            ts = ts_raw
+            if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                ts_f = ts.timestamp()
+            else:
+                continue
+            if ts_f < cutoff:
+                break
+            metrics = metrics_raw
+            if isinstance(metrics, str):
+                try:
+                    metrics = json.loads(metrics)
+                except Exception:
+                    continue
+            if not isinstance(metrics, dict):
+                continue
+            sample: dict[str, Any] = {"ts": ts_f}
+            for src, dst in self._HISTORY_KEYS.items():
+                v = metrics.get(src)
+                try:
+                    sample[dst] = float(v) if v is not None else 0.0
+                except (TypeError, ValueError):
+                    sample[dst] = 0.0
+            out.append(sample)
+        out.reverse()
+        return out
+
+    async def fetch_metric_history(
+        self, symbol: str, *, window_s: float = 900.0, max_rows: int = 5000
+    ) -> list[dict[str, Any]]:
+        """Muestras crudas recientes (orden cronológico) para rehidratar z-scores tras reinicio."""
+        return await asyncio.to_thread(self._fetch_metric_history_sync, symbol, float(window_s), int(max_rows))
 
     async def _ensure_writer(self) -> None:
         if self._writer is None:

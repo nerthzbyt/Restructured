@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -7,8 +8,11 @@ from typing import Any, Dict, Iterable, Optional
 
 from signal_engine import (
     DEFAULT_COMBINED_WEIGHTS,
+    DEFAULT_SIGNAL_PARAMS,
     CombinedWeights,
+    SignalParams,
     Thresholds,
+    clamp_thresholds,
     determine_decision_from_metrics,
     recompute_combined,
     symmetrize_threshold_values,
@@ -20,7 +24,7 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
         v = float(x)
     except Exception:
         return float(default)
-    return float(v)
+    return v if math.isfinite(v) else float(default)
 
 
 def _extract_trade_metrics(trade: Any) -> Dict[str, float]:
@@ -62,7 +66,10 @@ class ThresholdOptimizationResult:
 
 
 def _evaluate_system(
-    trades: Iterable[Any], th: Thresholds, w: Optional[CombinedWeights]
+    trades: Iterable[Any],
+    th: Thresholds,
+    w: Optional[CombinedWeights],
+    params: Optional[SignalParams] = None,
 ) -> Dict[str, Any]:
     selected = 0
     wins = 0
@@ -92,6 +99,7 @@ def _evaluate_system(
             buy_th=float(sym_th.combined_buy_threshold),
             sell_th=float(sym_th.combined_sell_threshold),
             hold_band=float(sym_th.combined_hold_band),
+            params=params,
         )
         if pred != action:
             continue
@@ -145,10 +153,18 @@ def _score_system(ev: Dict[str, Any]) -> float:
     return float(net) + float(bonus) + float(consistency) - float(penalty)
 
 
-def _clamp_symmetric(magnitude: float, hold: float) -> Thresholds:
-    mag = float(max(1.0, min(15.0, magnitude)))
-    hb = float(max(0.5, min(6.0, hold)))
-    return Thresholds(mag, -mag, hb)
+def _clamp_symmetric(
+    magnitude: float, hold: float, params: SignalParams = DEFAULT_SIGNAL_PARAMS
+) -> Thresholds:
+    return clamp_thresholds(magnitude, hold, params)
+
+
+def _random_thresholds(rng: random.Random, params: SignalParams) -> Thresholds:
+    return _clamp_symmetric(
+        magnitude=rng.uniform(params.threshold_min, params.threshold_max),
+        hold=rng.uniform(params.hold_band_min, params.hold_band_max),
+        params=params,
+    )
 
 
 def optimize_thresholds_from_trades(
@@ -157,6 +173,7 @@ def optimize_thresholds_from_trades(
     start: Thresholds,
     iterations: int = 400,
     seed: Optional[int] = None,
+    params: Optional[SignalParams] = None,
 ) -> ThresholdOptimizationResult:
     if not isinstance(trades, list) or not trades:
         return ThresholdOptimizationResult(
@@ -167,9 +184,10 @@ def optimize_thresholds_from_trades(
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
+    p = params or DEFAULT_SIGNAL_PARAMS
     rng = random.Random(int(seed) if seed is not None else None)
     start_sym = start.symmetrized()
-    base_eval = _evaluate_system(trades, start_sym, None)
+    base_eval = _evaluate_system(trades, start_sym, None, p)
     best_th = start_sym
     best_eval = base_eval
     best_score = _score_system(best_eval)
@@ -177,17 +195,15 @@ def optimize_thresholds_from_trades(
 
     for i in range(max(0, int(iterations))):
         if i % 10 == 0:
-            cand = _clamp_symmetric(
-                magnitude=rng.uniform(1.0, 15.0),
-                hold=rng.uniform(0.5, 6.0),
-            )
+            cand = _random_thresholds(rng, p)
         else:
             cand = _clamp_symmetric(
                 magnitude=float(start_mag if i < 2 else abs(best_th.combined_buy_threshold))
                 + rng.gauss(0.0, 0.9),
                 hold=float(best_th.combined_hold_band) + rng.gauss(0.0, 0.35),
+                params=p,
             )
-        ev = _evaluate_system(trades, cand, None)
+        ev = _evaluate_system(trades, cand, None, p)
         sc = _score_system(ev)
         if sc > best_score:
             best_score = sc
@@ -219,6 +235,7 @@ def optimize_system_from_trades(
     start_weights: Optional[CombinedWeights] = None,
     iterations: int = 900,
     seed: Optional[int] = None,
+    params: Optional[SignalParams] = None,
 ) -> SystemOptimizationResult:
     if not isinstance(trades, list) or not trades:
         return SystemOptimizationResult(
@@ -229,6 +246,7 @@ def optimize_system_from_trades(
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
+    p = params or DEFAULT_SIGNAL_PARAMS
     rng = random.Random(int(seed) if seed is not None else None)
     start_w = (
         start_weights
@@ -246,7 +264,7 @@ def optimize_system_from_trades(
         scale=start_w.scale,
     )
     start_th = start_thresholds.symmetrized()
-    baseline = _evaluate_system(trades, start_th, start_w)
+    baseline = _evaluate_system(trades, start_th, start_w, p)
     best_th = start_th
     best_w = start_w
     best_eval = baseline
@@ -254,10 +272,7 @@ def optimize_system_from_trades(
 
     for i in range(max(0, int(iterations))):
         if i % 10 == 0:
-            cand_th = _clamp_symmetric(
-                magnitude=rng.uniform(1.0, 15.0),
-                hold=rng.uniform(0.5, 6.0),
-            )
+            cand_th = _random_thresholds(rng, p)
             cand_w = CombinedWeights.normalize(
                 pio=rng.uniform(-1.0, 1.0),
                 egm=rng.uniform(-1.0, 1.0),
@@ -272,6 +287,7 @@ def optimize_system_from_trades(
             cand_th = _clamp_symmetric(
                 magnitude=float(best_th.combined_buy_threshold) + rng.gauss(0.0, 0.9),
                 hold=float(best_th.combined_hold_band) + rng.gauss(0.0, 0.35),
+                params=p,
             )
             cand_w = CombinedWeights.normalize(
                 pio=float(best_w.pio) + rng.gauss(0.0, 0.08),
@@ -284,7 +300,7 @@ def optimize_system_from_trades(
                 scale=float(best_w.scale) + rng.gauss(0.0, 1.0),
             )
 
-        ev = _evaluate_system(trades, cand_th, cand_w)
+        ev = _evaluate_system(trades, cand_th, cand_w, p)
         sc = _score_system(ev)
         if sc > best_score:
             best_score = sc
