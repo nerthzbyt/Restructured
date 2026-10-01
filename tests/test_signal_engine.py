@@ -69,17 +69,22 @@ class SignalEngineTests(unittest.TestCase):
         total = sum(abs(float(d[k])) for k in ("pio", "egm", "ild", "rol", "ogm", "mom", "tfi"))
         self.assertAlmostEqual(total, 1.0, places=2)
 
-    def test_recompute_combined_uses_tfi(self):
+    def test_recompute_combined_uses_tfi_z(self):
         w = DEFAULT_COMBINED_WEIGHTS
         base = recompute_combined(
-            {"pio": 1.0, "egm": 0.0, "ild": 0.0, "rol": 0.0, "ogm": 0.0, "mom": 0.0, "tfi": 0.0},
+            {"pio": 1.0, "egm": 0.0, "ild": 0.0, "rol": 0.0, "ogm": 0.0, "mom": 0.0, "tfi_z": 0.0},
             w,
         )
         with_tfi = recompute_combined(
+            {"pio": 1.0, "egm": 0.0, "ild": 0.0, "rol": 0.0, "ogm": 0.0, "mom": 0.0, "tfi_z": 2.0},
+            w,
+        )
+        raw_only = recompute_combined(
             {"pio": 1.0, "egm": 0.0, "ild": 0.0, "rol": 0.0, "ogm": 0.0, "mom": 0.0, "tfi": 2.0},
             w,
         )
         self.assertNotAlmostEqual(base, with_tfi)
+        self.assertEqual(base, raw_only)
 
     def test_spoof_trap_detected(self):
         sig = {

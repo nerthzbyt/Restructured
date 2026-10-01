@@ -32,7 +32,7 @@ jobs:
 
       - name: Unit + offline integration tests
         run: |
-          python -m unittest tests.test_signal_engine tests.test_dev_signal_lab tests.test_system tests.test_core_units tests.test_engine_offline -v
+          python -m unittest tests.test_signal_engine tests.test_dev_signal_lab tests.test_system tests.test_core_units tests.test_engine_offline tests.test_combined_parity -v
 
       - name: Security helper smoke tests
         run: |

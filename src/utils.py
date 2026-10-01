@@ -19,7 +19,7 @@ from collections import deque
 import numpy as np
 
 from nertz_core.history import MetricHistory, z_score
-from signal_engine import raw_weights
+from signal_engine import compose_combined, raw_weights
 
 logger = logging.getLogger("NertzMetalEngine")
 _RESULTS_JSON_LOCK = threading.Lock()
@@ -1522,11 +1522,6 @@ def calculate_metrics(
         w_tfi = weights["tfi"]
         w_scale = weights["scale"]
 
-        combined_z_micro = (
-            w_pio * pio_z + w_egm * egm_z + w_ild * ild_z
-            + w_rol * rol_z + w_ogm * ogm_z + w_tfi * tfi_z
-        )
-
         closes: List[float] = []
         for c in candle_data or []:
             if not isinstance(c, dict):
@@ -1574,8 +1569,21 @@ def calculate_metrics(
         )
         mom_z = _z(mom_raw, "mom_raw")
 
-        combined_z = float(combined_z_micro) + float(w_mom) * float(mom_z)
-        combined = float(combined_z * float(w_scale))
+        composition = compose_combined(
+            {
+                "pio": pio_z,
+                "egm": egm_z,
+                "ild": ild_z,
+                "rol": rol_z,
+                "ogm": ogm_z,
+                "mom": mom_z,
+                "tfi": tfi_z,
+            },
+            weights,
+        )
+        combined_z_micro = composition.combined_z_micro
+        combined_z = composition.combined_z
+        combined = composition.combined
 
         imb_vals: List[float] = []
         if isinstance(history, MetricHistory):
@@ -1785,13 +1793,7 @@ def calculate_metrics(
                 "scale": float(w_scale),
             },
             "combined_components": {
-                "pio": float(w_pio) * float(pio_z),
-                "egm": float(w_egm) * float(egm_z),
-                "ild": float(w_ild) * float(ild_z),
-                "rol": float(w_rol) * float(rol_z),
-                "ogm": float(w_ogm) * float(ogm_z),
-                "mom": float(w_mom) * float(mom_z),
-                "tfi": float(w_tfi) * float(tfi_z),
+                **composition.components,
                 "sum_z": float(combined_z),
             },
             "volatility": float(volatility),

@@ -7,14 +7,14 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 
 from signal_engine import (
-    DEFAULT_COMBINED_WEIGHTS,
     DEFAULT_SIGNAL_PARAMS,
+    RUNTIME_COMBINED_WEIGHTS,
     CombinedWeights,
     SignalParams,
     Thresholds,
     clamp_thresholds,
     determine_decision_from_metrics,
-    recompute_combined,
+    recompute_composition,
     symmetrize_threshold_values,
 )
 
@@ -92,8 +92,12 @@ def _evaluate_system(
         pl = _safe_float(getattr(t, "profit_loss", 0.0), 0.0)
         metrics = _extract_trade_metrics(t)
         if isinstance(w, CombinedWeights):
+            # Misma composición que el runtime (tfi_z, pesos sin normalizar);
+            # combined_z también, porque evaluate_signal lo usa al clasificar.
+            comp = recompute_composition(metrics, w)
             metrics = dict(metrics)
-            metrics["combined"] = recompute_combined(metrics, w)
+            metrics["combined"] = comp.combined
+            metrics["combined_z"] = comp.combined_z
         pred = determine_decision_from_metrics(
             metrics,
             buy_th=float(sym_th.combined_buy_threshold),
@@ -248,20 +252,12 @@ def optimize_system_from_trades(
 
     p = params or DEFAULT_SIGNAL_PARAMS
     rng = random.Random(int(seed) if seed is not None else None)
+    # El baseline se evalúa con los pesos de producción tal cual (sin normalizar);
+    # los candidatos explorados se evalúan y se devuelven exactamente como se usarán.
     start_w = (
         start_weights
         if isinstance(start_weights, CombinedWeights)
-        else DEFAULT_COMBINED_WEIGHTS
-    )
-    start_w = CombinedWeights.normalize(
-        pio=start_w.pio,
-        egm=start_w.egm,
-        ild=start_w.ild,
-        rol=start_w.rol,
-        ogm=start_w.ogm,
-        mom=start_w.mom,
-        tfi=start_w.tfi,
-        scale=start_w.scale,
+        else RUNTIME_COMBINED_WEIGHTS
     )
     start_th = start_thresholds.symmetrized()
     baseline = _evaluate_system(trades, start_th, start_w, p)
