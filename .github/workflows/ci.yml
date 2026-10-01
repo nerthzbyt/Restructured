@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Syntax check
+        run: |
+          python -m compileall -q scripts NerT_AI_PRO nertz_engine src_dev src
+
+      - name: Config registry sanity (.env.example up to date)
+        run: |
+          python src/settings.py --env-example > /tmp/env.generated
+          diff <(grep -v '^#' /tmp/env.generated | grep .) <(sed -n '/^# ===== exchange/,$p' .env.example | grep -v '^#' | grep .)
+
+      - name: Unit + offline integration tests
+        run: |
+          python -m unittest tests.test_signal_engine tests.test_dev_signal_lab tests.test_system tests.test_core_units tests.test_engine_offline -v
+
+      - name: Security helper smoke tests
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'scripts')
+          from path_safety import safe_path_under_project, safe_write_text
+          from url_safety import safe_local_base_url
+          safe_path_under_project('logs/results.json')
+          safe_local_base_url('http://127.0.0.1:8787')
+          print('security helpers ok')
+          "

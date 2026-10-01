@@ -1,0 +1,1 @@
+"""Cliente y validación del MCP oficial de Bybit (bybit-official-trading-server)."""

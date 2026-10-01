@@ -1,0 +1,13 @@
+aiohttp
+numpy
+optuna
+uvicorn
+python-dotenv
+fastapi
+SQLAlchemy
+websockets
+
+typing
+pydantic
+duckdb>=1.0
+duckdb
