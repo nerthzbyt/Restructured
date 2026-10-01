@@ -17,6 +17,7 @@ from optimizer import (
     _evaluate_system,
     optimize_system_from_trades,
 )
+from signal_engine import RAW_DEFAULT_WEIGHTS
 from utils import (
     append_results_event,
     load_results_json,
@@ -203,7 +204,12 @@ class AutoaprendizajeYAutonomiaTests(unittest.TestCase):
             + abs(float(w["mom"]))
             + abs(float(w.get("tfi", 0.0)))
         )
-        self.assertTrue(0.9 <= sum_abs <= 1.1)
+        if w == res.baseline["weights"]:
+            # Sin mejora: se conservan los pesos de producción tal cual (crudos).
+            self.assertEqual(w, dict(RAW_DEFAULT_WEIGHTS))
+        else:
+            # Candidatos explorados: normalizados (sum|w| = 1).
+            self.assertTrue(0.9 <= sum_abs <= 1.1)
 
     def test_autonomia_sin_trades(self):
         start = Thresholds(6.5, -6.5, 1.5)

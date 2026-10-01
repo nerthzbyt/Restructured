@@ -63,8 +63,10 @@ from intelligence_catalog import (  # noqa: E402
 from optimizer import optimize_system_from_trades  # noqa: E402
 from signal_engine import (  # noqa: E402
     DEFAULT_COMBINED_WEIGHTS,
+    RUNTIME_COMBINED_WEIGHTS,
     CombinedWeights,
     Thresholds,
+    recompute_combined,
     symmetrize_threshold_values,
 )
 
@@ -513,11 +515,12 @@ async def llm_chat(messages: list[Dict[str, str]], *, model: Optional[str] = Non
     return res
 
 def _weights_from_ticker_data(symbol: Optional[str]) -> CombinedWeights:
+    """Pesos tal como los usa el runtime (crudos, sin normalizar)."""
     if not isinstance(symbol, str) or not symbol:
-        return DEFAULT_COMBINED_WEIGHTS
+        return RUNTIME_COMBINED_WEIGHTS
     td = nertzh.bot.ticker_data.get(symbol)
     cw = td.get("combined_weights") if isinstance(td, dict) else None
-    return CombinedWeights.from_dict(cw if isinstance(cw, dict) else None)
+    return CombinedWeights.from_raw(cw if isinstance(cw, dict) else None)
 
 
 def _live_metrics_for_symbol(symbol: str) -> Dict[str, Any]:
@@ -2573,13 +2576,11 @@ def _evaluate_baseline_for_autoevolve(
         igd_n5_n20 = _safe_float(md.get("igd_n5_n20"), 0.0)
         cbd_n20 = _safe_float(md.get("cbd_n20"), 0.0)
 
-        combined = float(w.scale) * (
-            float(w.pio) * pio
-            + float(w.egm) * egm
-            + float(w.ild) * ild
-            + float(w.rol) * rol
-            + float(w.ogm) * ogm
-            + float(w.mom) * mom  # FIX #2: mom ahora incluido
+        # Composición canónica del runtime (incluye tfi_z; nunca el TFI crudo).
+        combined = recompute_combined(
+            {"pio": pio, "egm": egm, "ild": ild, "rol": rol, "ogm": ogm, "mom": mom,
+             "tfi_z": _safe_float(md.get("tfi_z"), 0.0)},
+            w,
         )
         pred = "hold"
         if abs(float(combined)) >= float(th.combined_hold_band):

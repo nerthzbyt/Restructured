@@ -172,6 +172,11 @@ class CombinedWeights:
         }
 
     @classmethod
+    def from_raw(cls, data: Optional[Mapping[str, Any]] = None) -> CombinedWeights:
+        """Pesos tal como los usa producción (``raw_weights``): sin normalizar ni recortar ``scale``."""
+        return cls(**raw_weights(data))
+
+    @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> CombinedWeights:
         d = data if isinstance(data, dict) else {}
         return cls.normalize(
@@ -214,6 +219,8 @@ class CombinedWeights:
         )
 
 
+# Pesos por defecto normalizados (sum|w| = 1). Compatibilidad: NO son los que usa
+# el runtime; para evaluar con semántica de producción usar RUNTIME_COMBINED_WEIGHTS.
 DEFAULT_COMBINED_WEIGHTS = CombinedWeights.normalize(**RAW_DEFAULT_WEIGHTS)
 
 
@@ -237,6 +244,10 @@ def raw_weights(data: Optional[Mapping[str, Any]] = None) -> Dict[str, float]:
     return out
 
 
+# Pesos por defecto exactamente como los usa el runtime (crudos, sin normalizar).
+RUNTIME_COMBINED_WEIGHTS = CombinedWeights.from_raw()
+
+
 def symmetrize_threshold_values(
     buy_th: float, sell_th: float, hold_band: float
 ) -> Thresholds:
@@ -247,17 +258,82 @@ def symmetrize_threshold_values(
     ).symmetrized()
 
 
-def recompute_combined(metrics: Dict[str, float], w: CombinedWeights) -> float:
-    z = (
-        float(w.pio) * _metric(metrics, "pio")
-        + float(w.egm) * _metric(metrics, "egm")
-        + float(w.ild) * _metric(metrics, "ild")
-        + float(w.rol) * _metric(metrics, "rol")
-        + float(w.ogm) * _metric(metrics, "ogm")
-        + float(w.mom) * _metric(metrics, "mom")
-        + float(w.tfi) * _metric(metrics, "tfi", "recent_trades_imbalance_qty_pct")
+# Clave de peso -> clave del snapshot con la variable z que usa el runtime.
+# Ojo: metrics["tfi"] es el TFI crudo (fórmula DEFAULT_FORMULAS, usado por los
+# vetos); el combined usa tfi_z. Nunca se cae al TFI crudo.
+COMBINED_INPUT_KEYS: Dict[str, str] = {
+    "pio": "pio",
+    "egm": "egm",
+    "ild": "ild",
+    "rol": "rol",
+    "ogm": "ogm",
+    "mom": "mom",
+    "tfi": "tfi_z",
+}
+
+
+@dataclass(frozen=True)
+class CombinedComposition:
+    combined_z_micro: float
+    combined_z: float
+    combined: float
+    components: Dict[str, float]
+
+
+def compose_combined(
+    z: Mapping[str, Any], weights: Mapping[str, Any]
+) -> CombinedComposition:
+    """Composición canónica del combined: fuente única para runtime, optimizer y backtest.
+
+    ``z``: componentes z por clave de peso (pio, egm, ild, rol, ogm, mom, tfi).
+    ``weights``: pesos tal cual (crudos, sin normalizar) más ``scale``.
+    El orden de las operaciones es el del runtime validado (bit a bit).
+    """
+    combined_z_micro = (
+        weights["pio"] * z["pio"] + weights["egm"] * z["egm"] + weights["ild"] * z["ild"]
+        + weights["rol"] * z["rol"] + weights["ogm"] * z["ogm"] + weights["tfi"] * z["tfi"]
     )
-    return float(z) * float(w.scale)
+    combined_z = float(combined_z_micro) + float(weights["mom"]) * float(z["mom"])
+    combined = float(combined_z * float(weights["scale"]))
+    return CombinedComposition(
+        combined_z_micro=float(combined_z_micro),
+        combined_z=float(combined_z),
+        combined=combined,
+        components={k: float(weights[k]) * float(z[k]) for k in _WEIGHT_KEYS},
+    )
+
+
+def combined_inputs_from_metrics(metrics: Mapping[str, Any]) -> Dict[str, float]:
+    """Variables z del snapshot que usa el runtime para el combined (tfi -> tfi_z)."""
+    m = metrics if isinstance(metrics, Mapping) else {}
+    return {k: _metric(m, src) for k, src in COMBINED_INPUT_KEYS.items()}
+
+
+def recompute_composition(
+    metrics: Mapping[str, Any],
+    w: Optional[CombinedWeights | Mapping[str, Any]] = None,
+) -> CombinedComposition:
+    """Recalcula el combined de un snapshot con la semántica exacta de producción.
+
+    ``w``: ``CombinedWeights`` (se usa tal cual, sin normalizar), un dict de pesos
+    crudos (vía ``raw_weights``, igual que el runtime) o ``None`` para usar los
+    ``combined_weights`` guardados en el propio snapshot.
+    """
+    if isinstance(w, CombinedWeights):
+        weights = w.as_dict()
+    else:
+        if w is None and isinstance(metrics, Mapping):
+            cw = metrics.get("combined_weights")
+            w = cw if isinstance(cw, Mapping) else None
+        weights = raw_weights(w)
+    return compose_combined(combined_inputs_from_metrics(metrics), weights)
+
+
+def recompute_combined(
+    metrics: Mapping[str, Any],
+    w: Optional[CombinedWeights | Mapping[str, Any]] = None,
+) -> float:
+    return recompute_composition(metrics, w).combined
 
 
 def normalize_signal_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:

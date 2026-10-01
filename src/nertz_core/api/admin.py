@@ -259,7 +259,7 @@ def build(bot) -> APIRouter:
             q = q.filter(Trade.symbol == symbol)
         trades = q.order_by(Trade.timestamp.desc()).limit(int(limit)).all()
         start_th = Thresholds(*bot._thresholds_for(symbol))
-        start_w = CombinedWeights.from_dict(bot.get_combined_weights(symbol) if symbol else cfg.COMBINED_WEIGHTS_JSON)
+        start_w = CombinedWeights.from_raw(bot.get_combined_weights(symbol) if symbol else cfg.COMBINED_WEIGHTS_JSON)
         before = {"thresholds": bot.thresholds_payload(), "weights": start_w.as_dict()}
         res = optimize_system_from_trades(trades, start_thresholds=start_th, start_weights=start_w,
                                           iterations=int(iterations), seed=seed, params=cfg.signal_params)
