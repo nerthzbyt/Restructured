@@ -4,6 +4,7 @@ Los snapshots se generan con el ``utils.calculate_metrics`` real (simulación
 secuencial con historia, igual que el ciclo del motor), así que ``combined``,
 ``combined_z`` y ``combined_components`` son exactamente los del runtime.
 """
+import json
 import os
 import random
 import sys
@@ -35,6 +36,7 @@ from signal_engine import (  # noqa: E402
 )
 
 TOL = 1e-10
+REAL_FIXTURE = os.path.join(BASE_DIR, "tests", "fixtures", "runtime_parity_20261001.json")
 BUY_TH, SELL_TH, HOLD = 4.5, -4.5, 3.0
 COMPONENTS = ("pio", "egm", "ild", "rol", "ogm", "mom", "tfi")
 EXPECTED_RAW = {
@@ -255,6 +257,93 @@ class CombinedParityTests(unittest.TestCase):
         again = optimizer._evaluate_system(trades, best_th, best_w)
         self.assertEqual(again["selected"], res.best["selected"])
         self.assertEqual(again["net_profit"], res.best["net_profit"])
+
+
+class RealRuntimeSnapshotParityTests(unittest.TestCase):
+    """Mismas comprobaciones sobre snapshots reales del runtime (logs/results.json)."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(REAL_FIXTURE, encoding="utf-8") as fh:
+            cls.rows = json.load(fh)["snapshots"]
+        assert len(cls.rows) > 1000
+
+    @staticmethod
+    def _kw(row):
+        th = row["thresholds"]
+        return dict(buy_th=th["combined_buy_threshold"], sell_th=th["combined_sell_threshold"],
+                    hold_band=th["combined_hold_band"])
+
+    def test_a_real_runtime_parity(self):
+        for i, r in enumerate(self.rows):
+            m = r["metrics"]
+            comp = recompute_composition(m)
+            self.assertLessEqual(abs(comp.combined - m["combined"]), TOL, i)
+            self.assertLessEqual(abs(comp.combined_z - m["combined_z"]), TOL, i)
+            self.assertLessEqual(abs(comp.combined_z_micro - m["combined_z_micro"]), TOL, i)
+            self.assertLessEqual(abs(recompute_combined(m, RUNTIME_COMBINED_WEIGHTS) - m["combined"]), TOL, i)
+
+    def test_b_real_component_parity(self):
+        checked = 0
+        for i, r in enumerate(self.rows):
+            m = r["metrics"]
+            if "combined_components" not in m:
+                continue
+            comp = recompute_composition(m)
+            for k in COMPONENTS:
+                self.assertLessEqual(abs(comp.components[k] - m["combined_components"][k]), TOL, (i, k))
+            checked += 1
+        self.assertGreater(checked, 1000)
+
+    def test_c_d_real_threshold_and_decision_parity(self):
+        crosses = set()
+        for i, r in enumerate(self.rows):
+            m = r["metrics"]
+            ev_rt = evaluate_signal(m, **self._kw(r))
+            ev_opt = evaluate_signal(_with_recomputed(m), **self._kw(r))
+            self.assertEqual(_cross(m["combined"], ev_rt), _cross(ev_opt["combined"], ev_opt), i)
+            self.assertEqual(ev_rt["decision"], r["expected_decision"], i)
+            self.assertEqual(ev_opt["decision"], r["expected_decision"], i)
+            crosses.add(_cross(m["combined"], ev_rt))
+        self.assertEqual(crosses, {"BUY_CROSS", "SELL_CROSS", "NO_CROSS"})
+
+    def test_d_real_optimizer_selects_every_runtime_trade(self):
+        by_th = {}
+        for r in self.rows:
+            if r["expected_decision"] in {"buy", "sell"}:
+                key = tuple(sorted(self._kw(r).items()))
+                by_th.setdefault(key, []).append(SimpleNamespace(
+                    action=r["expected_decision"], profit_loss=1.0,
+                    bybit_raw={"metrics_snapshot": {"metrics": r["metrics"]}}))
+        self.assertTrue(by_th)
+        for key, trades in by_th.items():
+            kw = dict(key)
+            th = Thresholds(kw["buy_th"], kw["sell_th"], kw["hold_band"])
+            ev = optimizer._evaluate_system(trades, th, RUNTIME_COMBINED_WEIGHTS)
+            self.assertEqual(ev["selected"], len(trades))
+
+    def test_e_real_tfi_z_not_raw(self):
+        differ = 0
+        for r in self.rows:
+            m = r["metrics"]
+            base = recompute_combined(m)
+            self.assertEqual(recompute_combined({**m, "tfi": -m.get("tfi", 0.0) + 7.0}), base)
+            if abs(m.get("tfi", m["tfi_z"]) - m["tfi_z"]) > 1e-6:
+                differ += 1
+        self.assertGreater(differ, 100)
+
+    def test_legacy_path_reproduces_reported_bug(self):
+        diffs, changed = [], 0
+        for r in self.rows:
+            m = r["metrics"]
+            if "tfi" not in m:
+                continue
+            legacy = _legacy_optimizer_combined(m)
+            diffs.append(abs(legacy - m["combined"]))
+            ev_legacy = evaluate_signal({**m, "combined": legacy}, **self._kw(r))
+            changed += ev_legacy["decision"] != r["expected_decision"]
+        self.assertGreater(max(diffs), 8.0)
+        self.assertGreater(changed, 0)
 
 
 if __name__ == "__main__":
