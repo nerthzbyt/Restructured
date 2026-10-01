@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 
 from settings import ConfigSettings
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PROJECT_ROOT = str(Path(os.path.abspath(__file__)).parent.parent.parent)
 
 _config: Optional[ConfigSettings] = None
 _database = None
@@ -41,10 +42,12 @@ class RuntimePaths:
 def default_config() -> ConfigSettings:
     """Config del proceso (carga ``.env`` de la raíz sin pisar variables ya definidas)."""
     global _config
-    if _config is None:
+    cfg = _config
+    if cfg is None:
         load_dotenv(dotenv_path=os.path.join(PROJECT_ROOT, ".env"), override=False)
-        _config = ConfigSettings()
-    return _config
+        cfg = ConfigSettings()
+        _config = cfg
+    return cfg
 
 
 def default_database():

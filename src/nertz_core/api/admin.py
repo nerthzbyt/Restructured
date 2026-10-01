@@ -30,7 +30,7 @@ def build(bot) -> APIRouter:
             raise HTTPException(status_code=422, detail=str(e)) from e
 
     def _log_action(kind: str, **data: Any) -> None:
-        bot._actions().append({"type": kind, "ts": _now(), **data})
+        bot.actions().append({"type": kind, "ts": _now(), **data})
 
     # ------------------------------------------------------- lifecycle
     @router.post("/start")
@@ -55,7 +55,7 @@ def build(bot) -> APIRouter:
             "symbols": bot.symbols,
             "support_loop_running": bool(bot.support_task is not None and not bot.support_task.done()),
             "mode": bot.mode,
-            "auto_hft_enabled": bot._auto_hft_enabled_effective(),
+            "auto_hft_enabled": bot.auto_hft_enabled_effective(),
             "hft": {s: {"running": bot.is_hft_running(s), "params": bot.hft_params.get(s) or {}} for s in bot.symbols},
             "timestamp": _now(),
         }
@@ -103,7 +103,7 @@ def build(bot) -> APIRouter:
 
     @router.post("/config/update")
     async def config_update(values: Dict[str, Any] = Body(...)):
-        """Cambio en caliente de cualquier clave registrada (validado igual que el .env)."""
+        """Cambio en caliente de cualquier clave registrada (con la misma validación que el archivo .env)."""
         return {"success": True, "changes": _apply(values, "api"), "timestamp": _now()}
 
     @router.post("/config/update_all")
@@ -116,7 +116,7 @@ def build(bot) -> APIRouter:
             "combined_buy_threshold": "COMBINED_BUY_THRESHOLD",
             "combined_sell_threshold": "COMBINED_SELL_THRESHOLD",
         }
-        values = {mapping.get(k, k.upper()): v for k, v in (config_data or {}).items()}
+        values: Dict[str, Any] = {mapping.get(k) or k.upper(): v for k, v in (config_data or {}).items()}
         changes = _apply(values, "api_update_all")
         return {"message": "Configuración actualizada", "changes": changes, "timestamp": _now()}
 
@@ -134,7 +134,7 @@ def build(bot) -> APIRouter:
                 "risk_factor": cfg.for_symbol(symbol, "RISK_FACTOR"),
                 "min_trade_size": cfg.for_symbol(symbol, "MIN_TRADE_SIZE"),
                 "max_trade_size": cfg.for_symbol(symbol, "MAX_TRADE_SIZE"),
-                "metrics": {"symbol": symbol, "metrics": bot.compute_metrics(symbol, bot._candles_for(symbol, db))[0],
+                "metrics": {"symbol": symbol, "metrics": bot.compute_metrics(symbol, bot.candles_for(symbol, db))[0],
                             "timestamp": _now()},
             }
             for symbol in bot.symbols
@@ -161,8 +161,8 @@ def build(bot) -> APIRouter:
     # ---------------------------------------------------------- agent
     @router.get("/admin/agent/status")
     async def admin_agent_status():
-        window_s = bot._metrics_window_s()
-        decisions, _ = bot._recent_decisions(bot.symbols, window_s, int(cfg.AGENT_DECISIONS_MAX))
+        window_s = bot.metrics_window_s()
+        decisions, _ = bot.recent_decisions(bot.symbols, window_s, int(cfg.AGENT_DECISIONS_MAX))
         total = len(decisions)
         counts = {k: sum(1 for d in decisions if d == k) for k in ("hold", "buy", "sell")}
         return {
@@ -186,7 +186,7 @@ def build(bot) -> APIRouter:
     async def admin_agent_enable(enabled: bool = True):
         _apply({"AUTO_AGENT_ENABLED": enabled}, "api")
         _log_action("set_auto_agent", enabled=bool(enabled))
-        await bot._record_event({"type": "agent_action", "action": "set_auto_agent", "enabled": bool(enabled)})
+        await bot.record_event({"type": "agent_action", "action": "set_auto_agent", "enabled": bool(enabled)})
         return {"success": True, "auto_agent_enabled": cfg.AUTO_AGENT_ENABLED, "timestamp": _now()}
 
     @router.post("/admin/agent/tick")
@@ -198,8 +198,8 @@ def build(bot) -> APIRouter:
     async def admin_agent_relax_thresholds(factor: float = Query(default=0.9, gt=0.5, lt=1.0)):
         change = bot.relax_thresholds(factor, source="manual_relax")
         _log_action("manual_relax_thresholds", factor=float(factor), **change)
-        await bot._record_event({"type": "agent_action", "action": "manual_relax_thresholds",
-                                 "factor": float(factor), **change})
+        await bot.record_event({"type": "agent_action", "action": "manual_relax_thresholds",
+                                "factor": float(factor), **change})
         return {"success": True, **change, "timestamp": _now()}
 
     # ------------------------------------------------------------ TP/SL
@@ -208,11 +208,11 @@ def build(bot) -> APIRouter:
         recent = [a for a in list(bot.agent_events.get("actions") or [])[-80:]
                   if isinstance(a, dict) and a.get("type") == "auto_tpsl_amend"]
         return {"enabled": cfg.AUTO_TPSL_ENABLED, "interval_s": cfg.AUTO_TPSL_INTERVAL_S,
-                "last_tick_ts": bot._auto_tpsl_last_tick_ts, "recent_actions": recent, "timestamp": _now()}
+                "last_tick_ts": bot.auto_tpsl_last_tick_ts, "recent_actions": recent, "timestamp": _now()}
 
     @router.post("/admin/tpsl/tick")
     async def admin_tpsl_tick(db: Session = Depends(get_db)):
-        return await bot._auto_tpsl_tick(db)
+        return await bot.auto_tpsl_tick(db)
 
     @router.post("/admin/tpsl/enabled")
     async def admin_tpsl_enabled(enabled: bool = True):
@@ -225,13 +225,13 @@ def build(bot) -> APIRouter:
         _apply({"AUTO_HFT_ENABLED": enabled}, "api")
         bot.auto_hft_enabled = bool(enabled)
         _log_action("set_auto_hft", enabled=bool(enabled))
-        await bot._record_event({"type": "auto_hft", "action": "set_enabled", "enabled": bool(enabled)})
+        await bot.record_event({"type": "auto_hft", "action": "set_enabled", "enabled": bool(enabled)})
         return {"success": True, "auto_hft_enabled": bool(enabled), "timestamp": _now()}
 
     @router.get("/admin/auto_hft/status")
     async def admin_auto_hft_status():
         return {
-            "enabled": bot._auto_hft_enabled_effective(),
+            "enabled": bot.auto_hft_enabled_effective(),
             "tick_s": cfg.AUTO_HFT_TICK_S,
             "window_s": cfg.AUTO_HFT_WINDOW_S,
             "min_snapshots": cfg.AUTO_HFT_MIN_SNAPSHOTS,
@@ -258,7 +258,7 @@ def build(bot) -> APIRouter:
         if symbol:
             q = q.filter(Trade.symbol == symbol)
         trades = q.order_by(Trade.timestamp.desc()).limit(int(limit)).all()
-        start_th = Thresholds(*bot._thresholds_for(symbol))
+        start_th = Thresholds(*bot.thresholds_for(symbol))
         start_w = CombinedWeights.from_raw(bot.get_combined_weights(symbol) if symbol else cfg.COMBINED_WEIGHTS_JSON)
         before = {"thresholds": bot.thresholds_payload(), "weights": start_w.as_dict()}
         res = optimize_system_from_trades(trades, start_thresholds=start_th, start_weights=start_w,
@@ -307,7 +307,7 @@ def build(bot) -> APIRouter:
     # --------------------------------------------------------- storage
     @router.get("/storage/status")
     async def storage_status():
-        storage = bot._storage
+        storage = bot.storage
         paths = bot.paths
         return {
             "backend": cfg.STORAGE_BACKEND,
@@ -319,7 +319,7 @@ def build(bot) -> APIRouter:
             "wal_present": os.path.exists(f"{paths.storage_path}.wal"),
             "analysis_jsonl": "metrics_snapshots.jsonl — espejo legible; DuckDB es la serie HF del bot",
             "pycharm_hint": ("DuckDB: jdbc:duckdb:path/to/nertz.duckdb?duckdb.read_only=true (NO abrir .wal). "
-                             "Si falla: deten el bot o scripts/release_duckdb_lock.ps1. Trades en SQLite."),
+                             "Si falla: detén el bot o ejecuta scripts/release_duckdb_lock.ps1. Trades en SQLite."),
             "batch_interval_ms": cfg.STORAGE_BATCH_INTERVAL_MS,
             "orderbook_persist_interval_ms": cfg.ORDERBOOK_PERSIST_INTERVAL_MS,
             "ticker_persist_interval_ms": cfg.TICKER_PERSIST_INTERVAL_MS,
@@ -332,7 +332,7 @@ def build(bot) -> APIRouter:
     async def storage_recent(symbol: str, limit: int = 10, db: Session = Depends(get_db)):
         sym = str(symbol or "").strip().upper()
         lim = max(1, min(100, int(limit)))
-        storage = bot._storage
+        storage = bot.storage
         payload: Dict[str, Any] = {"symbol": sym, "limit": lim, "duckdb_active": storage is not None,
                                    "sqlite_mirror": cfg.STORAGE_SQLITE_MIRROR}
         if storage is not None and hasattr(storage, "fetch_recent"):

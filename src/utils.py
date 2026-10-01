@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from collections import deque
 
@@ -102,6 +103,8 @@ class WelfordState:
             if not isinstance(h, dict):
                 continue
             v = h.get(key)
+            if v is None:
+                continue
             try:
                 fv = float(v)
             except (TypeError, ValueError):
@@ -131,7 +134,7 @@ def _tsm_is_valid_number(x: Any) -> bool:
         return False
     try:
         v = float(x)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return False
     return math.isfinite(v)
 
@@ -141,7 +144,7 @@ def _tsm_to_number(x: Any) -> Optional[float]:
         return None
     try:
         v = float(x)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return None
     if not math.isfinite(v):
         return None
@@ -154,7 +157,7 @@ def _tsm_round_half_away_from_zero(x: float) -> float:
     return float(-math.floor(abs(x) + 0.5))
 
 
-_TSM_NUMBER_RE = re.compile(r"(?:(?:\d+\.\d+)|(?:\d+\.?)|(?:\.\d+))(?:[eE][+-]?\d+)?")
+_TSM_NUMBER_RE = re.compile(r"(?:\d+\.\d+|\d+\.?|\.\d+)(?:[eE][+-]?\d+)?")
 _TSM_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_:\.]*")
 
 
@@ -233,7 +236,8 @@ class _TSMParser:
             raise _TSMFormulaError("trailing_tokens")
         return expr
 
-    def _lbp(self, tok: _TSMToken) -> int:
+    @staticmethod
+    def _lbp(tok: _TSMToken) -> int:
         if tok.t != "op":
             return 0
         if tok.v in ("+", "-"):
@@ -338,7 +342,7 @@ def eval_tsm_ast(
     *,
     functions: Optional[Dict[str, Callable[..., Any]]] = None,
 ) -> Optional[float]:
-    ctx = context if isinstance(context, dict) else {}
+    ctx: Dict[str, Any] = context if isinstance(context, dict) else {}
     fn = functions if isinstance(functions, dict) else {}
 
     def _fn(name: str) -> Optional[Callable[..., Any]]:
@@ -413,7 +417,7 @@ def eval_tsm_ast(
             return None
         try:
             v = float(math.pow(float(av), float(bv)))
-        except Exception:
+        except (ValueError, OverflowError):
             return None
         return v if math.isfinite(v) else None
 
@@ -507,11 +511,13 @@ def eval_tsm_ast(
         pv = _tsm_to_number(p)
         if pv is None:
             return None
-        conv = ctx.get("_convert")
+        conv: Any = ctx.get("_convert")
         if callable(conv):
+            # _convert lo inyecta el llamador: cualquier fallo devuelve el precio sin convertir.
             try:
                 return _tsm_to_number(conv(float(pv)))
-            except Exception:
+            except Exception as exc:
+                logger.debug("TSM _convert falló (%s): se usa el precio sin convertir", exc)
                 return float(pv)
         return float(pv)
 
@@ -551,9 +557,11 @@ def eval_tsm_ast(
             name = str(n.v)
             f = _fn(name)
             if f is not None:
+                # Funciones de fórmula registradas por el usuario: un fallo equivale a valor ausente.
                 try:
                     return _tsm_to_number(f(*_as_args(n.a or [])))
-                except Exception:
+                except Exception as exc:
+                    logger.debug("TSM función %s falló: %s", name, exc)
                     return None
             lname = name.lower()
             args = _as_args(n.a or [])
@@ -631,9 +639,11 @@ def eval_tsm_formulas(
             continue
         if not isinstance(v, str) or not v.strip():
             continue
+        # Fórmulas configurables: un error de parseo/evaluación se trata como valor ausente.
         try:
             res = eval_tsm_formula(v, context)
-        except Exception:
+        except Exception as exc:
+            logger.debug("TSM fórmula %s no evaluable: %s", k, exc)
             res = None
         vnum = _tsm_to_number(res)
         if vnum is not None:
@@ -686,7 +696,7 @@ def load_metrics_raw_history_from_jsonl(
     try:
         with open(path, "r", encoding="utf-8") as f:
             all_lines = f.readlines()
-    except Exception:
+    except (OSError, UnicodeDecodeError):
         return []
 
     tail = all_lines[-int(max_lines):] if len(all_lines) > int(max_lines) else all_lines
@@ -697,7 +707,7 @@ def load_metrics_raw_history_from_jsonl(
             continue
         try:
             row = json.loads(line)
-        except Exception:
+        except ValueError:
             continue
         if not isinstance(row, dict):
             continue
@@ -779,7 +789,7 @@ def compute_recent_trades_metrics(
         try:
             if ts is not None:
                 last_ts = float(ts)
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             pass
         if qty <= 0 or price <= 0:
             continue
@@ -812,13 +822,13 @@ def compute_recent_trades_metrics(
                     lr.append(float(math.log(p1 / p0)))
             if len(lr) >= 2:
                 rvol = float(np.std(np.asarray(lr, dtype=np.float64)))
-    except Exception:
+    except (ValueError, ArithmeticError):
         rvol = 0.0
     last_age = None
     if last_ts is not None:
         try:
             last_age = max(0.0, float(now_s) - float(last_ts))
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             last_age = None
 
     return {
@@ -841,7 +851,7 @@ def compute_recent_trades_metrics(
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
         v = float(x)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return float(default)
     return v if math.isfinite(v) else float(default)
 
@@ -889,7 +899,7 @@ def _pivot_levels_from_candles(
     def _cluster(xs: List[Tuple[float, float]], side: str) -> List[Dict[str, float]]:
         if not xs:
             return []
-        xs_sorted = sorted(xs, key=lambda t: t[0])
+        xs_sorted = sorted(xs, key=lambda item: item[0])
         clusters: List[Dict[str, float]] = []
         for price, weight in xs_sorted:
             if price <= 0:
@@ -1052,7 +1062,7 @@ def calculate_discovery_metrics(
         if levels:
             levels_sorted = sorted(
                 levels,
-                key=lambda t: abs(t[0] - last_price),
+                key=lambda lvl: abs(lvl[0] - last_price),
             )
             acc = 0.0
             thr = pe * 0.5
@@ -1267,7 +1277,7 @@ def calculate_metrics(
             ipv = _tsm_to_number(ip)
             if ipv is not None:
                 index_price = float(ipv)
-        except Exception:
+        except (AttributeError, TypeError):
             mark_price = last_price
             index_price = last_price
 
@@ -1312,7 +1322,7 @@ def calculate_metrics(
                 q = float(row[1])
                 if p > 0 and q > 0:
                     bids_in.append((p, q))
-            except Exception:
+            except (TypeError, ValueError, IndexError, KeyError, OverflowError):
                 continue
         for row in asks_raw[:depth_i]:
             try:
@@ -1320,7 +1330,7 @@ def calculate_metrics(
                 q = float(row[1])
                 if p > 0 and q > 0:
                     asks_in.append((p, q))
-            except Exception:
+            except (TypeError, ValueError, IndexError, KeyError, OverflowError):
                 continue
 
         if not bids_in or not asks_in:
@@ -1447,8 +1457,8 @@ def calculate_metrics(
                 key=lambda x: x[0],
                 reverse=not ascending,
             )
-            prices = np.array([p for p, _ in levels_sorted], dtype=np.float64)
-            qtys = np.array([q for _, q in levels_sorted], dtype=np.float64)
+            prices = np.array([lvl[0] for lvl in levels_sorted], dtype=np.float64)
+            qtys = np.array([lvl[1] for lvl in levels_sorted], dtype=np.float64)
             if len(prices) < 3:
                 return 0.0, 0.0
             gaps = np.abs(np.diff(prices))
@@ -1477,7 +1487,7 @@ def calculate_metrics(
                 prev_liq_f = float(prev_weighted_liq)
                 if dt_s_f > 0:
                     rol_raw = (weighted_liquidity - prev_liq_f) / dt_s_f
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             rol_raw = 0.0
 
         history = ticker_data.get("metric_history")
@@ -1487,8 +1497,10 @@ def calculate_metrics(
             history = []
 
         if isinstance(history, MetricHistory):
+            metric_history: MetricHistory = history
+
             def _z(current: float, key: str) -> float:
-                return z_score(history.column(key), current, min_count=5)
+                return z_score(metric_history.column(key), current, min_count=5)
         else:
             def _z(current: float, key: str) -> float:
                 return WelfordState.z_from_window(
@@ -1549,10 +1561,10 @@ def calculate_metrics(
             if span <= 1 or len(values) < 2:
                 return float(values[-1]) if values else 0.0
             alpha = 2.0 / (float(span) + 1.0)
-            e = float(values[0])
+            ema_val = float(values[0])
             for x in values[1:]:
-                e = alpha * float(x) + (1.0 - alpha) * e
-            return float(e)
+                ema_val = alpha * float(x) + (1.0 - alpha) * ema_val
+            return float(ema_val)
 
         ema5 = _ema(closes_chrono, 5) if closes_chrono else 0.0
         ema20 = _ema(closes_chrono, 20) if closes_chrono else 0.0
@@ -1620,7 +1632,7 @@ def calculate_metrics(
         if isinstance(formulas, str) and formulas.strip():
             try:
                 formulas = json.loads(formulas)
-            except Exception:
+            except ValueError:
                 formulas = {}
         ctx: Dict[str, Any] = {
             **{
@@ -1704,6 +1716,7 @@ def calculate_metrics(
             if sell_v is not None:
                 ctx["taker_sell_qty"] = float(sell_v)
 
+        # Discovery es opcional: si falla, las fórmulas se evalúan sin esas variables.
         try:
             discovery = calculate_discovery_metrics(
                 candle_data,
@@ -1748,8 +1761,8 @@ def calculate_metrics(
                     vnum = _tsm_to_number(v)
                     if vnum is not None:
                         ctx[k] = float(vnum)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("discovery metrics no disponibles para fórmulas: %s", exc)
         formulas_dict = formulas if isinstance(formulas, dict) else {}
         derived = eval_tsm_formulas(formulas_dict, ctx)
 
@@ -1875,7 +1888,7 @@ def _safe_float_opt(x: Any) -> Optional[float]:
         if not np.isfinite(v):
             return None
         return v
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -1972,7 +1985,7 @@ def validate_metric_predictiveness_from_results(
                         continue
                     try:
                         rec = json.loads(s)
-                    except Exception:
+                    except ValueError:
                         continue
                     if not isinstance(rec, dict):
                         continue
@@ -2059,13 +2072,12 @@ def validate_metric_predictiveness_from_results(
     try:
         if float(np.std(x_norm)) > 1e-12 and float(np.std(y)) > 1e-12:
             pearson = float(np.corrcoef(x_norm, y)[0, 1])
-    except Exception:
+    except (ValueError, ArithmeticError, IndexError):
         pearson = None
 
-    spear = None
     try:
         spear = _spearman_corr(x_norm, y)
-    except Exception:
+    except (ValueError, ArithmeticError, IndexError):
         spear = None
 
     directional = float(
@@ -2173,7 +2185,7 @@ def _load_results_raw(filepath: str) -> Dict[str, Any]:
                 if isinstance(data, dict):
                     logger.warning("results.json restaurado desde .bak")
                     return data
-            except Exception:
+            except (OSError, ValueError):
                 pass
     except OSError as e:
         logger.error("No se pudo leer results.json: %s", e)
@@ -2266,11 +2278,11 @@ def append_results_event(
         events = existing.get("events")
         if not isinstance(events, list):
             events = []
-        ev = dict(event) if isinstance(event, dict) else {"payload": event}
+        ev: Dict[str, Any] = dict(event) if isinstance(event, dict) else {"payload": event}
         if "timestamp" not in ev:
             ev["timestamp"] = _results_now_iso()
         events.append(ev)
-        if max_events > 0 and len(events) > max_events:
+        if 0 < max_events < len(events):
             events = events[-max_events:]
         existing["events"] = events
         _atomic_write_results_json(filepath, existing)
@@ -2281,9 +2293,8 @@ def update_last_balance(
     log_dir: str = "logs",
 ) -> None:
     existing = load_results_json(log_dir)
-    prev_meta = (
-        existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
-    )
+    prev_meta_raw = existing.get("metadata")
+    prev_meta: Dict[str, Any] = prev_meta_raw if isinstance(prev_meta_raw, dict) else {}
     body: Dict[str, Any] = {
         "last_balance": {
             **balance,
@@ -2364,7 +2375,7 @@ def _git_run(cmd: List[str], cwd: str) -> subprocess.CompletedProcess:
 
 
 def _perform_auto_git_commit(reason: str = "runtime") -> None:
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    root = str(Path(os.path.abspath(__file__)).parent.parent)
     if not os.path.isdir(os.path.join(root, ".git")):
         return
     status = _git_run(["git", "status", "--porcelain"], root)
@@ -2397,7 +2408,7 @@ def maybe_auto_git_commit(reason: str = "runtime") -> None:
             args=(reason,),
             daemon=True,
         ).start()
-    except Exception:
+    except RuntimeError:
         pass
 
 

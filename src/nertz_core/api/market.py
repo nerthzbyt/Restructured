@@ -36,11 +36,11 @@ def build(bot) -> APIRouter:
         )
 
     def _metrics(symbol: str, db: Session) -> Dict[str, Any]:
-        return bot.compute_metrics(symbol, bot._candles_for(symbol, db))[0]
+        return bot.compute_metrics(symbol, bot.candles_for(symbol, db))[0]
 
     @router.get("/market_data/{symbol}")
     async def get_market_data(symbol: str, db: Session = Depends(get_db)):
-        return {"symbol": symbol, "candles": _candle_rows(bot._candles_for(symbol, db, limit=5))}
+        return {"symbol": symbol, "candles": _candle_rows(bot.candles_for(symbol, db, limit=5))}
 
     @router.get("/ticker/{symbol}")
     async def get_ticker(symbol: str, db: Session = Depends(get_db)):
@@ -63,7 +63,7 @@ def build(bot) -> APIRouter:
 
     @router.get("/combined/{symbol}")
     async def get_combined(symbol: str, db: Session = Depends(get_db)):
-        candles = bot._candles_for(symbol, db)
+        candles = bot.candles_for(symbol, db)
         book = bot.orderbook_data.get(symbol)
         live_ticker = bot.ticker_data.get(symbol) or {}
         ob_row = None if book is not None and book.is_ready() else (
@@ -89,12 +89,12 @@ def build(bot) -> APIRouter:
             },
             "recent_trades": list(bot.recent_trades.get(symbol) or [])[-10:],
             "metrics": metrics,
-            "decision": bot._decision_detail(symbol, metrics),
+            "decision": bot.decision_detail(symbol, metrics),
             "timestamp": _now(),
         }
 
     def _discovery(symbol: str, db: Session, limit: int) -> Dict[str, Any]:
-        candles = _db_candles(db, symbol, limit) or bot._candles_for(symbol)
+        candles = _db_candles(db, symbol, limit) or bot.candles_for(symbol)
         return calculate_discovery_metrics(
             candle_inputs(candles),
             bot.orderbook_data.get(symbol) or {"bids": [], "asks": []},
@@ -105,22 +105,22 @@ def build(bot) -> APIRouter:
     def _component(name: str, with_discovery: bool):
         async def endpoint(symbol: str, db: Session = Depends(get_db)):
             prod = _metrics(symbol, db)
-            payload = {
+            payload: Dict[str, Any] = {
                 "symbol": symbol,
                 "timestamp": _now(),
                 name: float(prod.get(name) or 0.0),
                 f"{name}_raw": float(prod.get(f"{name}_raw") or 0.0),
+                "components": (
+                    _discovery(symbol, db, cfg.CANDLE_BUFFER_SIZE).get("combined") or {} if with_discovery else prod
+                ),
             }
-            payload["components"] = (
-                _discovery(symbol, db, cfg.CANDLE_BUFFER_SIZE).get("combined") or {} if with_discovery else prod
-            )
             return payload
 
         endpoint.__name__ = f"get_{name}"
         return endpoint
 
-    for name, with_disc in (("ild", True), ("rol", True), ("pio", False), ("egm", False), ("ogm", False)):
-        router.add_api_route(f"/{name}/{{symbol}}", _component(name, with_disc), methods=["GET"])
+    for metric_name, with_disc in (("ild", True), ("rol", True), ("pio", False), ("egm", False), ("ogm", False)):
+        router.add_api_route(f"/{metric_name}/{{symbol}}", _component(metric_name, with_disc), methods=["GET"])
 
     @router.get("/discovery/metrics/{symbol}")
     async def get_discovery_metrics(symbol: str, db: Session = Depends(get_db)):
@@ -155,7 +155,7 @@ def build(bot) -> APIRouter:
     @router.get("/candles/{symbol}/{limit}")
     async def get_candles(symbol: str, limit: int = 5, db: Session = Depends(get_db)):
         lim = max(1, min(int(cfg.MAX_CANDLES_API), int(limit)))
-        candles = bot._candles_for(symbol, db, limit=lim)
+        candles = bot.candles_for(symbol, db, limit=lim)
         if len(candles) < lim:
             candles = _db_candles(db, symbol, lim) or candles
         return {"symbol": symbol, "candles": _candle_rows(candles), "timestamp": _now()}

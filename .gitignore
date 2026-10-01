@@ -18,7 +18,8 @@ logs/
 !.env.example
 
 # IDE / tooling
-.idea/
+.idea/*
+!.idea/dictionaries/
 .pytest_cache/
 .history/
 .agents/

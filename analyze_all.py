@@ -22,9 +22,10 @@ def parse_date(dt_str):
 def analyze():
     print("Iniciando análisis de datos y logs...")
     
-    report_content = []
-    report_content.append("# Reporte de Análisis de Datos y de Mercado (NerT_AI_PRO)")
-    report_content.append(f"Generado el: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    report_content = [
+        "# Reporte de Análisis de Datos y de Mercado (NerT_AI_PRO)",
+        f"Generado el: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+    ]
     
     # ----------------------------------------------------
     # 1. ANÁLISIS DE RESULTS.JSON
@@ -37,7 +38,6 @@ def analyze():
             
             meta = res_data.get("metadata", {})
             summary = res_data.get("summary", {})
-            by_symbol = res_data.get("by_symbol", {})
             btc_trades = res_data.get("trades", {}).get("BTCUSDT", [])
             
             report_content.append("### Metadatos Generales")
@@ -103,7 +103,7 @@ def analyze():
             report_content.append(f"- **Total de Registros de Métricas:** {len(records)} instantáneas")
             if records:
                 decisions = {}
-                prices = []
+                prices: list[float] = []
                 combined_scores = []
                 ild_scores = []
                 egm_scores = []
@@ -118,7 +118,7 @@ def analyze():
                     
                     lp = r.get("last_price")
                     if lp is not None:
-                        prices.append(lp)
+                        prices.append(float(lp))
                         
                     m = r.get("metrics", {})
                     if m:
@@ -188,16 +188,15 @@ def analyze():
             report_content.append(f"- **Total de Transacciones en DB:** {len(db_trades)} trade(s)")
             
             if db_trades:
-                winners_db = []
-                losers_db = []
-                pnl_db = []
+                winners_db: list[float] = []
+                losers_db: list[float] = []
+                pnl_db: list[float] = []
                 durations = []
                 action_counts = {}
                 outcome_status_counts = {}
                 
                 for t in db_trades:
-                    p = t.get('profit_loss')
-                    if p is None: p = 0.0
+                    p = float(t.get('profit_loss') or 0.0)
                     pnl_db.append(p)
                     
                     if p > 0:
@@ -236,9 +235,9 @@ def analyze():
             cursor.execute("SELECT * FROM balance_snapshots ORDER BY timestamp")
             balances = [dict(row) for row in cursor.fetchall()]
             if balances:
-                start_eq = balances[0]['total_equity']
-                end_eq = balances[-1]['total_equity']
-                eq_vals = [b['total_equity'] for b in balances]
+                eq_vals: list[float] = [float(b['total_equity']) for b in balances]
+                start_eq = eq_vals[0]
+                end_eq = eq_vals[-1]
                 
                 # Drawdown
                 peak = -1e9
@@ -293,7 +292,7 @@ def analyze():
             cursor.execute("SELECT COUNT(*) FROM trades")
             db_trade_count = cursor.fetchone()[0]
             conn.close()
-        except:
+        except sqlite3.Error:
             pass
             
     if os.path.exists(results_path):
@@ -301,7 +300,7 @@ def analyze():
             with open(results_path, 'r') as f:
                 res_data = json.load(f)
             json_trade_count = res_data.get("metadata", {}).get("total_trades", 0)
-        except:
+        except (OSError, ValueError):
             pass
             
     report_content.append(f"- **Registros de Trades:**")

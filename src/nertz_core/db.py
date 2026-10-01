@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, overload
 
 from sqlalchemy import JSON, DateTime, Float, Integer, String, create_engine, or_, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Mapped, Session, declarative_base, mapped_column, sessionmaker
 
 Base = declarative_base()
@@ -162,20 +163,31 @@ class Database:
         finally:
             db.close()
 
-    def wipe(self, db: Session) -> Dict[str, int]:
+    @staticmethod
+    def wipe(db: Session) -> Dict[str, int]:
         counts: Dict[str, int] = {}
         for model in ALL_MODELS:
             try:
                 counts[model.__tablename__] = int(db.query(model).delete() or 0)
-            except Exception:
+            except SQLAlchemyError:
                 counts[model.__tablename__] = -1
         db.commit()
         try:
             db.execute(text("VACUUM"))
             db.commit()
-        except Exception:
+        except SQLAlchemyError:
             pass
         return counts
+
+
+@overload
+def utc_aware(dt: datetime) -> datetime:
+    ...
+
+
+@overload
+def utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    ...
 
 
 def utc_aware(dt: Optional[datetime]) -> Optional[datetime]:

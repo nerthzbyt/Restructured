@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from nertz_core.db import MarketData, MarketTicker, Orderbook
+from nertz_core.engine.host import EngineHost
 from nertz_core.history import MetricHistory
 from nertz_core.market import candle_from_bybit_row, candle_from_ws, parse_public_trade, parse_ticker
 from utils import load_metrics_raw_history_from_jsonl
@@ -33,7 +34,7 @@ def duckdb_lock_hint(exc: BaseException, project_root: str) -> str:
     parts = [
         "Otra instancia de Python tiene abierto nertz.duckdb.",
         "Detén el bot anterior (Ctrl+C en su terminal) o ejecuta:",
-        f'  powershell -ExecutionPolicy Bypass -File "{release_script}"',
+        f'  PowerShell -ExecutionPolicy Bypass -File "{release_script}"',
     ]
     if pid_match:
         pid = pid_match.group(1)
@@ -41,7 +42,7 @@ def duckdb_lock_hint(exc: BaseException, project_root: str) -> str:
     return " ".join(parts)
 
 
-class MarketDataMixin:
+class MarketDataMixin(EngineHost):
     # ------------------------------------------------------ public REST
     def _public_client(self):
         if self._public is None:
@@ -140,7 +141,7 @@ class MarketDataMixin:
             if loaded:
                 logger.info(f"📊 Historial de métricas restaurado para {symbol}: {len(loaded)} muestras")
 
-    # compat con el nombre antiguo (síncrono)
+    # Compatibilidad con el nombre antiguo (síncrono).
     def restore_metrics_history_sync(self) -> None:
         window_s = max(60.0, float(self.config.METRICS_WINDOW_MINUTES) * 60.0)
         for symbol in self.symbols:
@@ -224,12 +225,13 @@ class MarketDataMixin:
             logger.error(f"❌ Error inesperado en mensaje: {e}", exc_info=True)
 
     # --------------------------------------------------------- handlers
-    async def _handle_kline(self, symbol: str, kline: Dict, db: Any = None):
+    async def _handle_kline(self, symbol: str, kline: Dict):
         candle = candle_from_ws(symbol, kline)
         if candle is None:
             logger.warning(f"⚠️ Kline inválido para {symbol}: {kline}")
             return
-        incoming_ts = float(kline.get("start"))
+        # El kline ya pasó por candle_from_ws, que valida que "start" exista y sea numérico.
+        incoming_ts = float(kline["start"])
         is_confirmed = kline.get("confirm") in (True, "true", 1, "1")
 
         buf = self.candles.setdefault(symbol, [])
@@ -264,7 +266,7 @@ class MarketDataMixin:
     async def _execute_trade(self, symbol: str, db):
         await self._core_cycle(symbol, db, collect_only=False)
 
-    async def _handle_orderbook(self, symbol: str, data: Dict, db: Any = None):
+    async def _handle_orderbook(self, symbol: str, data: Dict):
         book = self.orderbook_data[symbol]
         payload = data.get("data") or {}
         kind = data.get("type")
@@ -278,7 +280,7 @@ class MarketDataMixin:
             return
         await self._store_orderbook(symbol)
 
-    async def _store_orderbook(self, symbol: str, db: Any = None):
+    async def _store_orderbook(self, symbol: str):
         now_ts = time.time()
         if now_ts - float(self._last_orderbook_store_ts.get(symbol, 0.0) or 0.0) < self.config.ORDERBOOK_PERSIST_INTERVAL_MS / 1000.0:
             return
@@ -300,7 +302,7 @@ class MarketDataMixin:
         except Exception as e:
             logger.error(f"❌ Error al guardar orderbook para {symbol}: {e}")
 
-    async def _handle_public_trade(self, symbol: str, trades: Any, db: Any = None) -> None:
+    async def _handle_public_trade(self, symbol: str, trades: Any) -> None:
         if not isinstance(trades, list):
             return
         q = self.recent_trades.setdefault(symbol, deque(maxlen=self.config.RECENT_TRADES_BUFFER))
@@ -311,12 +313,12 @@ class MarketDataMixin:
                 if row is not None:
                     q.append(row)
 
-    async def _handle_ticker(self, symbol: str, ticker: Dict, db: Any = None):
+    async def _handle_ticker(self, symbol: str, ticker: Dict):
         parsed = parse_ticker(ticker)
         if parsed is None:
             self._rl_log(f"ticker_bad:{symbol}", "warning", f"⚠️ Ticker inválido para {symbol}: {ticker}")
             return
-        # update in-place: conserva claves añadidas por API/agente (p.ej. combined_weights).
+        # Actualización in-place: conserva claves añadidas por API/agente (p. ej. combined_weights).
         live = self.ticker_data.setdefault(symbol, {})
         live.update(parsed)
 

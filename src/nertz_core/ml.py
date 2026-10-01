@@ -79,21 +79,21 @@ def train_logistic(
     if len(feats) < int(min_samples):
         return {"success": False, "message": "insufficient_clean_samples", "samples": len(feats)}
 
-    X = np.vstack(feats)
+    x_mat = np.vstack(feats)
     y = np.array(labels, dtype=np.float64)
-    mu = X.mean(axis=0)
-    sigma = X.std(axis=0)
+    mu = x_mat.mean(axis=0)
+    sigma = x_mat.std(axis=0)
     sigma = np.where(sigma > 1e-9, sigma, 1.0)
-    Xb = np.concatenate([np.ones((X.shape[0], 1)), (X - mu) / sigma], axis=1)
+    xb = np.concatenate([np.ones((x_mat.shape[0], 1)), (x_mat - mu) / sigma], axis=1)
 
-    w = np.zeros(Xb.shape[1], dtype=np.float64)
-    n = float(Xb.shape[0])
+    w = np.zeros(xb.shape[1], dtype=np.float64)
+    n = float(xb.shape[0])
     for _ in range(int(max(10, epochs))):
-        grad = (Xb.T @ (sigmoid(Xb @ w) - y)) / n
+        grad = (xb.T @ (sigmoid(xb @ w) - y)) / n
         grad[1:] += float(l2) * w[1:]
         w -= float(lr) * grad
 
-    acc = float(((sigmoid(Xb @ w) >= 0.5).astype(np.float64) == y).mean()) if y.size else 0.0
+    acc = float(((sigmoid(xb @ w) >= 0.5).astype(np.float64) == y).mean()) if y.size else 0.0
     return {
         "success": True,
         "model": {
@@ -101,7 +101,7 @@ def train_logistic(
             "mu": mu.tolist(),
             "sigma": sigma.tolist(),
             "w": w.tolist(),
-            "samples": int(Xb.shape[0]),
+            "samples": int(xb.shape[0]),
             "accuracy_train": acc,
             "trained_at": datetime.now(timezone.utc).isoformat(),
         },
@@ -120,5 +120,5 @@ def predict_proba(model: Optional[Mapping[str, Any]], x: np.ndarray) -> Optional
         xn = (x - mu) / np.where(sigma > 1e-9, sigma, 1.0)
         p = float(sigmoid(np.concatenate([[1.0], xn]) @ w))
         return p if np.isfinite(p) else None
-    except Exception:
+    except (TypeError, ValueError, AttributeError):
         return None

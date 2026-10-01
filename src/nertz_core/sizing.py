@@ -24,12 +24,10 @@ def format_decimal(value: Decimal) -> str:
     return s if s else "0"
 
 
-def quantize_to_step(value: float, step: float, rounding: str) -> Decimal:
+def quantize_to_step(value: float, step: Optional[float], rounding: str) -> Decimal:
     dv = to_decimal(value)
-    if step is None or step <= 0:
-        return dv
     ds = to_decimal(step)
-    if ds == 0:
+    if not ds.is_finite() or ds <= 0:
         return dv
     return (dv / ds).to_integral_value(rounding=rounding) * ds
 
@@ -147,7 +145,7 @@ def size_order(inp: SizingInputs, rules: InstrumentRules) -> SizingResult:
     detail = {**caps, "notional": notional, "min_notional": min_notional, "risk_budget": risk_budget}
     if qty_dec <= 0:
         return SizingResult(False, qty_dec, "cantidad_cero", detail)
-    if capital > 0 and notional > capital:
+    if 0 < capital < notional:
         return SizingResult(False, qty_dec, "capital_insuficiente_para_minimo_exchange", detail)
     return SizingResult(True, qty_dec, "", detail)
 

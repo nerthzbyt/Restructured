@@ -61,12 +61,14 @@ class OrderBook:
         self.seq = seq
 
     def _render(self) -> Dict[str, List[List[str]]]:
-        if self._view is None:
+        view = self._view
+        if view is None:
             d = self.depth
             bids = [list(self._bids[p]) for p in sorted(self._bids, reverse=True)[:d]]
             asks = [list(self._asks[p]) for p in sorted(self._asks)[:d]]
-            self._view = {"bids": bids, "asks": asks}
-        return self._view
+            view = {"bids": bids, "asks": asks}
+            self._view = view
+        return view
 
     # Interfaz dict (compat: el resto del sistema usa orderbook_data[sym]["bids"]).
     def __getitem__(self, key: str) -> List[List[str]]:

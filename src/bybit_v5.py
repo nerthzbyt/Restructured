@@ -3,7 +3,7 @@ import asyncio
 import json
 import random
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 from urllib.parse import urlencode
 
 import aiohttp
@@ -57,7 +57,8 @@ class BybitV5Client:
         self.backoff_base_s = float(backoff_base_s)
         self.backoff_max_s = float(backoff_max_s)
 
-    def _timestamp_ms(self) -> str:
+    @staticmethod
+    def _timestamp_ms() -> str:
         return str(int(time.time() * 1000))
 
     def _sign(self, payload: str, timestamp_ms: str) -> str:
@@ -82,17 +83,20 @@ class BybitV5Client:
         }
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
+        session = self._session
+        if session is None or session.closed:
             timeout = aiohttp.ClientTimeout(total=max(1.0, float(self.timeout_s)))
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            session = aiohttp.ClientSession(timeout=timeout)
+            self._session = session
             self._owns_session = True
-        return self._session
+        return session
 
     async def aclose(self) -> None:
         if self._owns_session and self._session is not None and not self._session.closed:
             await self._session.close()
 
-    def _should_retry_http(self, status: int) -> bool:
+    @staticmethod
+    def _should_retry_http(status: int) -> bool:
         if status == 429:
             return True
         if status in (408, 409):
@@ -106,16 +110,14 @@ class BybitV5Client:
         jitter = random.uniform(0.0, 0.2)
         return float(min(self.backoff_max_s, base + jitter))
 
-    def _parse_retry_after_s(self, headers: "aiohttp.typedefs.LooseHeaders") -> Optional[float]:
-        try:
-            raw = headers.get("Retry-After")  # type: ignore[attr-defined]
-        except Exception:
-            raw = None
+    @staticmethod
+    def _parse_retry_after_s(headers: Mapping[str, Any]) -> Optional[float]:
+        raw = headers.get("Retry-After") if isinstance(headers, Mapping) else None
         if raw is None:
             return None
         try:
             return float(raw)
-        except Exception:
+        except (TypeError, ValueError):
             return None
 
     async def _request_json(
@@ -150,7 +152,7 @@ class BybitV5Client:
                     last_status = int(resp.status)
                     try:
                         last_payload = await resp.json(content_type=None)
-                    except Exception:
+                    except ValueError:
                         txt = await resp.text()
                         last_payload = {"retCode": -1, "retMsg": "non_json_response", "text": txt}
                     if self._should_retry_http(last_status) and attempt < int(self.max_retries):

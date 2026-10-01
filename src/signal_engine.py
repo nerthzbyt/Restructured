@@ -18,7 +18,7 @@ class SignalParams:
     """Parámetros del motor de señal (defaults calibrados, validación exchange 2026-07-04).
 
     Se pueden sobreescribir sin tocar código vía ``SIGNAL_PARAMS_JSON`` en .env,
-    p.ej. ``{"rvol_min": 1e-5, "trade_age_max_s": 6}``.
+    p. ej. ``{"rvol_min": 1e-5, "trade_age_max_s": 6}``.
     """
 
     base_vol_ref: float = 0.002
@@ -98,12 +98,12 @@ _WEIGHT_FALLBACK = tuple(RAW_DEFAULT_WEIGHTS[k] for k in _WEIGHT_KEYS)
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
         v = float(x)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return float(default)
     return float(v) if bool(np.isfinite(v)) else float(default)
 
 
-def _metric(metrics: Dict[str, Any], *keys: str, default: float = 0.0) -> float:
+def _metric(metrics: Mapping[str, Any], *keys: str, default: float = 0.0) -> float:
     for k in keys:
         if k in metrics and metrics[k] is not None:
             return _safe_float(metrics[k], default)
@@ -428,7 +428,7 @@ def classify_market_state(
     ):
         return MarketState.BREAKOUT
 
-    if vol > 0 and vol < p.vol_chop_max and abs(tfi) < p.tfi_chop_band:
+    if 0 < vol < p.vol_chop_max and abs(tfi) < p.tfi_chop_band:
         return MarketState.CHOP
 
     if (
@@ -467,8 +467,7 @@ def _ok_v2_buy(sig: Dict[str, float]) -> bool:
 def _ok_v2_sell(sig: Dict[str, float]) -> bool:
     return (
         sig["ema_diff_rel"] <= 0.0
-        and sig["igd_n5_n20"] <= 0.0
-        and sig["cbd_n20"] >= 0.0
+        and sig["igd_n5_n20"] <= 0.0 <= sig["cbd_n20"]
     )
 
 

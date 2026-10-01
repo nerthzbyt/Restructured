@@ -28,7 +28,7 @@ async def launcher_loop(bot, server: uvicorn.Server) -> None:
             "running": bot.running,
             "mode": bot.mode,
             "support_loop_running": bool(bot.support_task is not None and not bot.support_task.done()),
-            "auto_hft_enabled": bot._auto_hft_enabled_effective(),
+            "auto_hft_enabled": bot.auto_hft_enabled_effective(),
             "hft": {s: {"running": bot.is_hft_running(s), "params": bot.hft_params.get(s) or {}} for s in bot.symbols},
         }, indent=2))
 

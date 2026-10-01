@@ -2,6 +2,17 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- Hallazgos de Qodana / Inspect Code (PyCharm): `done` posiblemente sin asignar en el writer de DuckDB, `_convert` tratado como no invocable, código inalcanzable en `quantize_to_step` (un `step` NaN ahora devuelve el valor sin cuantizar) y formatos `:,.2f` sobre tipos no numéricos en `analyze_all.py`.
+- `except Exception` silenciosos acotados al tipo de error real; los que deben seguir amplios (llamadas al exchange, fórmulas configurables) ahora registran el error en el log.
+
+### Changed
+- Los routers API, `cli.py` y el migrador usan métodos/propiedades públicos del motor y de `DuckDBBackend` en lugar de miembros `_privados`.
+- Nuevo `nertz_core/engine/host.py`: declara el estado compartido que usan los mixins (solo anotaciones, sin efecto en runtime).
+- Diccionario de proyecto compartido para el corrector del IDE en `.idea/dictionaries/project.xml`.
+
 ## [5.2.0] — 2026-09-30
 
 Reestructuración de `src/` como monolito modular. Mapa completo en `docs/v5/architecture.md`.

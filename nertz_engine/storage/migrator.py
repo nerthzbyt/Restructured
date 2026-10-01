@@ -24,7 +24,7 @@ def migrate_metrics_jsonl(
         return {"ok": False, "error": "jsonl_not_found", "path": path}
 
     backend = DuckDBBackend(duckdb_path, flush_interval_ms=100.0)
-    backend._connect()
+    backend.connect()
 
     imported = 0
     with open(path, "r", encoding="utf-8") as f:
@@ -36,7 +36,7 @@ def migrate_metrics_jsonl(
                 continue
             try:
                 rec = json.loads(s)
-            except Exception:
+            except ValueError:
                 continue
             if not isinstance(rec, dict):
                 continue
@@ -48,10 +48,12 @@ def migrate_metrics_jsonl(
                     ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
                 else:
                     ts = datetime.now(timezone.utc)
-            except Exception:
+            except (TypeError, ValueError, OverflowError, OSError):
                 ts = datetime.now(timezone.utc)
-            metrics = rec.get("metrics") if isinstance(rec.get("metrics"), dict) else {}
-            thresholds = rec.get("thresholds") if isinstance(rec.get("thresholds"), dict) else {}
+            metrics_raw = rec.get("metrics")
+            metrics: dict[str, Any] = metrics_raw if isinstance(metrics_raw, dict) else {}
+            thresholds_raw = rec.get("thresholds")
+            thresholds: dict[str, Any] = thresholds_raw if isinstance(thresholds_raw, dict) else {}
             row = MetricRow(
                 timestamp=ts,
                 symbol=str(rec.get("symbol") or ""),
@@ -65,14 +67,12 @@ def migrate_metrics_jsonl(
                 ogm=float(metrics.get("ogm") or 0.0),
                 volatility=float(metrics.get("volatility") or 0.0),
                 thresholds=thresholds,
-                metrics=metrics if isinstance(metrics, dict) else {},
+                metrics=metrics,
             )
-            assert backend._conn is not None
-            backend._insert_metrics(backend._conn, [row])
+            backend.insert_metrics_now([row])
             imported += 1
 
-    if backend._conn is not None:
-        backend._conn.close()
+    backend.close()
     return {"ok": True, "imported": imported, "duckdb_path": os.path.abspath(duckdb_path)}
 
 
@@ -97,7 +97,7 @@ def migrate_sqlite_trades(
         con.close()
 
     backend = DuckDBBackend(duckdb_path, flush_interval_ms=100.0)
-    backend._connect()
+    backend.connect()
     from nertz_engine.storage.base import EventRow
 
     imported = 0
@@ -105,7 +105,7 @@ def migrate_sqlite_trades(
     for ts_s, symbol, action, pl, combined in rows:
         try:
             ts = datetime.fromisoformat(str(ts_s).replace("Z", "+00:00"))
-        except Exception:
+        except ValueError:
             ts = datetime.now(timezone.utc)
         batch.append(
             EventRow(
@@ -120,14 +120,11 @@ def migrate_sqlite_trades(
             )
         )
         if len(batch) >= 500:
-            assert backend._conn is not None
-            backend._insert_events(backend._conn, batch)
+            backend.insert_events_now(batch)
             imported += len(batch)
             batch = []
     if batch:
-        assert backend._conn is not None
-        backend._insert_events(backend._conn, batch)
+        backend.insert_events_now(batch)
         imported += len(batch)
-    if backend._conn is not None:
-        backend._conn.close()
+    backend.close()
     return {"ok": True, "imported": imported, "duckdb_path": os.path.abspath(duckdb_path)}

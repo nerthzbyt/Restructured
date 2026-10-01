@@ -22,7 +22,7 @@ from signal_engine import (
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
         v = float(x)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return float(default)
     return v if math.isfinite(v) else float(default)
 

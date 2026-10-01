@@ -11,7 +11,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from sqlalchemy.orm import Session
@@ -41,6 +41,9 @@ except ImportError:  # pragma: no cover - paquete opcional
     OperationManager = None  # type: ignore[assignment]
     create_storage = None  # type: ignore[assignment]
 
+if TYPE_CHECKING:
+    from nertz_engine.engine.symbols import OperationManager as OperationManagerT
+
 
 def log_s(value: Any, max_len: int = 200) -> str:
     return str(value).replace("\r", "").replace("\n", " ")[:max_len]
@@ -64,7 +67,7 @@ class NertzMetalEngine(MarketDataMixin, OrdersMixin, TPSLMixin, AutomationMixin,
         cfg = self.config
         self.timeframe = cfg.TIMEFRAME
         self.symbols: List[str] = list(cfg.symbols)
-        self.operations = (
+        self.operations: Optional[OperationManagerT] = (
             OperationManager(
                 self.symbols,
                 max_concurrent_orders=cfg.MAX_CONCURRENT_ORDERS,
@@ -297,6 +300,26 @@ class NertzMetalEngine(MarketDataMixin, OrdersMixin, TPSLMixin, AutomationMixin,
         return self._hft_params
 
     @property
+    def last_metrics_by_symbol(self) -> Dict[str, Dict[str, float]]:
+        return self._last_metrics_by_symbol
+
+    @property
+    def auto_hft_state(self) -> Dict[str, Dict[str, Any]]:
+        return self._auto_hft_state
+
+    @property
+    def auto_tpsl_last_tick_ts(self) -> float:
+        return float(self._auto_tpsl_last_tick_ts)
+
+    @property
+    def last_orders_sync_results(self) -> Dict[str, Any]:
+        return self._last_orders_sync_results
+
+    @property
+    def storage(self) -> Any:
+        return self._storage
+
+    @property
     def auto_hft_enabled(self) -> bool:
         return bool(self._auto_hft_enabled)
 
@@ -319,6 +342,42 @@ class NertzMetalEngine(MarketDataMixin, OrdersMixin, TPSLMixin, AutomationMixin,
 
     def bybit_client(self) -> Optional[BybitV5Client]:
         return self._bybit_client()
+
+    def actions(self) -> deque:
+        return self._actions()
+
+    def auto_hft_enabled_effective(self) -> bool:
+        return self._auto_hft_enabled_effective()
+
+    def candles_for(self, symbol: str, db: Optional[Session] = None, limit: Optional[int] = None) -> List[Any]:
+        return self._candles_for(symbol, db, limit=limit)
+
+    def decision_detail(self, symbol: str, metrics: Dict) -> Dict[str, Any]:
+        return self._decision_detail(symbol, metrics)
+
+    def thresholds_for(self, symbol: Optional[str]) -> Tuple[float, float, float]:
+        return self._thresholds_for(symbol)
+
+    def metrics_window_s(self) -> float:
+        return self._metrics_window_s()
+
+    def recent_decisions(self, symbols: List[str], window_s: float, limit: int) -> Tuple[List[str], List[float]]:
+        return self._recent_decisions(symbols, window_s, limit)
+
+    async def record_event(self, event: Dict[str, Any]) -> None:
+        await self._record_event(event)
+
+    async def auto_tpsl_tick(self, db: Session) -> Dict[str, Any]:
+        return await self._auto_tpsl_tick(db)
+
+    def serialize_trade_for_api(self, t: Trade) -> Dict[str, Any]:
+        return self._serialize_trade_for_api(t)
+
+    def set_order_status(self, order_id: str, symbol: str, status: str, raw: Any = None, **extra: Any) -> None:
+        self._set_order_status(order_id, symbol, status, raw, **extra)
+
+    def next_trade_id(self, db: Session) -> int:
+        return self._next_trade_id(db)
 
     # ------------------------------------------------- signal / weights
     def get_combined_weights(self, symbol: str) -> Dict[str, float]:
@@ -392,7 +451,8 @@ class NertzMetalEngine(MarketDataMixin, OrdersMixin, TPSLMixin, AutomationMixin,
         buy_th = self._thresholds_for(symbol)[0]
         return not (abs(comb) >= abs(buy_th) * float(self.config.COOLDOWN_BYPASS_MULT))
 
-    def _default_metrics(self) -> Dict[str, Any]:
+    @staticmethod
+    def _default_metrics() -> Dict[str, Any]:
         return {"combined": 0.0, "ild": 0.0, "egm": 0.0, "rol": 0.0, "pio": 0.0, "ogm": 0.0, "volatility": 0.0,
                 "data_ok": False}
 
@@ -447,13 +507,13 @@ class NertzMetalEngine(MarketDataMixin, OrdersMixin, TPSLMixin, AutomationMixin,
         book = self.orderbook_data.get(symbol)
         ticker = self.ticker_data.get(symbol) or {}
         ready = len(candles) >= 2 and book is not None and book.is_ready() and ticker.get("last_price")
-        if not ready:
+        if not ready or book is None:
             return self._default_metrics(), True
 
         payload, recent = self._metrics_context(symbol, now_ts)
         metrics = calculate_metrics(
             candle_inputs(candles),
-            book,
+            book.as_dict(),
             payload,
             depth=int(self.config.ORDERBOOK_DEPTH),
             recent_trades=recent,

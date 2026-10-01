@@ -30,7 +30,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_status(args: argparse.Namespace) -> int:
+def cmd_status(_args: argparse.Namespace) -> int:
     _ensure_paths()
     from nertz_core.runtime import default_config
 

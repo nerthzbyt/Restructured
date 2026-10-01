@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from nertz_core.accounting import executed_entry, parse_wallet_balance, trade_pnl
 from nertz_core.db import BalanceSnapshot, Trade, merge_raw, trade_order_link_id, utc_aware
+from nertz_core.engine.host import EngineHost
 from nertz_core.sizing import InstrumentRules, format_decimal, to_decimal
 from utils import timestamp_to_datetime
 
@@ -37,7 +38,7 @@ def _f(value: Any, default: float = 0.0) -> float:
         return default
 
 
-class OrdersMixin:
+class OrdersMixin(EngineHost):
     # ----------------------------------------------------------- clients
     def _bybit_client(self):
         if not self.config.LIVE_TRADING_ENABLED:
@@ -269,7 +270,8 @@ class OrdersMixin:
         async def _one(sym: str) -> List[Dict[str, Any]]:
             try:
                 payload = await client.get_open_orders_merged(category=category, symbol=sym, limit=200)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudieron leer órdenes abiertas de {sym}: {e}")
                 return []
             return list((payload.get("result") or {}).get("list") or []) if payload.get("retCode") == 0 else []
 
@@ -281,7 +283,8 @@ class OrdersMixin:
                     merged[oid] = row
         return list(merged.values())
 
-    def open_trades(self, db: Session, limit: int = 500) -> List[Trade]:
+    @staticmethod
+    def open_trades(db: Session, limit: int = 500) -> List[Trade]:
         from nertz_core.db import OPEN_STATUSES
 
         return (
@@ -367,7 +370,8 @@ class OrdersMixin:
                     self._set_order_status(oid, sym, "cancelled", res)
                 else:
                     results["errors"] += 1
-            except Exception:
+            except Exception as e:
+                logger.warning(f"⚠️ Error cancelando TP/SL huérfano {oid} ({sym}): {e}")
                 results["errors"] += 1
 
     async def sync_open_orders(
@@ -394,7 +398,7 @@ class OrdersMixin:
                 return {"success": True, "results": {"skipped": 1, "reason": "sync_interval"}}
             self._last_orders_sync_ts = now_ts
             now = datetime.now(timezone.utc)
-            results = dict.fromkeys(
+            results: Dict[str, int] = dict.fromkeys(
                 ("checked", "updated", "amended", "cancelled", "tpsl_cancelled", "replaced", "imported_orphan",
                  "orphan_open", "no_action", "errors"),
                 0,
@@ -430,8 +434,8 @@ class OrdersMixin:
                     if isinstance(oid, str) and oid:
                         open_by_id[oid] = o
                         self._set_order_status(oid, sym, str(o.get("orderStatus") or "").lower(), o)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"⚠️ Error leyendo órdenes abiertas de {sym}: {e}")
 
         await self._cancel_stale_tpsl(client, sym, open_by_id, now, results)
 
@@ -484,8 +488,9 @@ class OrdersMixin:
                     continue
                 try:
                     res = await client.cancel_order({"category": category, "symbol": sym, "orderId": order_id})
-                except Exception:
-                    res = {"retCode": -1}
+                except Exception as e:
+                    logger.warning(f"⚠️ Error cancelando orden {order_id} ({sym}): {e}")
+                    res = {"retCode": -1, "retMsg": str(e)}
                 if res.get("retCode") == 0:
                     merge_raw(trade, cancel=res)
                     # Lo ejecutado antes de cancelar sigue siendo posición abierta.
@@ -526,7 +531,8 @@ class OrdersMixin:
                     results["imported_orphan"] += 1
                     changed = True
                     self._balance_dirty = True
-            except Exception:
+            except Exception as e:
+                logger.warning(f"⚠️ Error importando orden huérfana {oid} ({sym}): {e}")
                 results["errors"] += 1
         return changed
 
@@ -549,7 +555,8 @@ class OrdersMixin:
             body["stopLoss"] = format_decimal(rules.price(float(trade.sl_price)))
         try:
             res = await client.amend_order(body)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"⚠️ Error modificando orden {order_id} ({sym}): {e}")
             return False
         if res.get("retCode") == 0:
             merge_raw(trade, amend=res)
@@ -562,8 +569,9 @@ class OrdersMixin:
         side = str(orphan.get("side") or "").strip().lower()
         if side not in {"buy", "sell"}:
             return False
+        created = orphan.get("createdTime")
         try:
-            ts = timestamp_to_datetime(int(orphan.get("createdTime")))
+            ts = timestamp_to_datetime(int(created)) if created is not None else now
         except (TypeError, ValueError):
             ts = now
         entry = _f(orphan.get("price")) or _f(orphan.get("avgPrice"))
@@ -598,7 +606,8 @@ class OrdersMixin:
                                trade_id=int(trade.trade_id))
         return True
 
-    async def _update_trade_from_bybit(self, trade: Optional[Trade], bybit_order: Dict[str, Any]) -> bool:
+    @staticmethod
+    async def _update_trade_from_bybit(trade: Optional[Trade], bybit_order: Dict[str, Any]) -> bool:
         if trade is None:
             return False
         try:

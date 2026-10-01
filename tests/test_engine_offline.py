@@ -173,7 +173,7 @@ class EngineOfflineTests(unittest.TestCase):
             # Métricas del ciclo alimentan la historia (incluida TFI).
             with eng.SessionLocal() as db:
                 await eng.core_cycle("XRPUSDT", db, collect_only=True)
-            self.assertTrue(eng._last_metrics_by_symbol["XRPUSDT"].get("data_ok"))
+            self.assertTrue(eng.last_metrics_by_symbol["XRPUSDT"].get("data_ok"))
             self.assertEqual(len(eng._metrics_raw_history["XRPUSDT"]), 1)
             self.assertEqual(eng._metrics_raw_history["XRPUSDT"].column("tfi_raw").size, 1)
 
@@ -214,7 +214,7 @@ class EngineOfflineTests(unittest.TestCase):
             eng.ticker_data["XRPUSDT"]["last_price"] = tp + 0.001
             eng._auto_tpsl_last_tick_ts = 0.0
             with eng.SessionLocal() as db:
-                res = await eng._auto_tpsl_tick(db)
+                res = await eng.auto_tpsl_tick(db)
             self.assertEqual(res["results"]["executed_virtual"], 1)
             close = client.created[-1]
             self.assertEqual(close["side"], "Sell")

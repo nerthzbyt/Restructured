@@ -43,14 +43,14 @@ def build(bot) -> APIRouter:
     @router.get("/trades/{symbol}")
     async def get_trades(symbol: str, db: Session = Depends(get_db)):
         rows = db.query(Trade).filter(Trade.symbol == symbol).order_by(Trade.timestamp.desc()).all()
-        trades = [bot._serialize_trade_for_api(t) for t in rows]
+        trades = [bot.serialize_trade_for_api(t) for t in rows]
         bot.trades_cache[symbol] = trades
         return {"symbol": symbol, "trades": trades, "timestamp": _now(), "source": "sqlite_live"}
 
     @router.get("/last_trade/{symbol}")
     async def get_last_trade(symbol: str, db: Session = Depends(get_db)):
         last = db.query(Trade).filter_by(symbol=symbol).order_by(Trade.timestamp.desc()).first()
-        return {"symbol": symbol, "last_trade": bot._serialize_trade_for_api(last) if last is not None else None,
+        return {"symbol": symbol, "last_trade": bot.serialize_trade_for_api(last) if last is not None else None,
                 "timestamp": _now(), "source": "sqlite_live"}
 
     @router.get("/ml/dataset/trades")
@@ -88,7 +88,8 @@ def build(bot) -> APIRouter:
             })
         if output == "csv":
             buf = io.StringIO()
-            w = csv.DictWriter(buf, fieldnames=list(_ML_FIELDS))
+            fieldnames: List[str] = list(_ML_FIELDS)
+            w = csv.DictWriter(buf, fieldnames=fieldnames)
             w.writeheader()
             w.writerows(rows)
             return PlainTextResponse(content=buf.getvalue(), media_type="text/csv")
@@ -136,14 +137,14 @@ def build(bot) -> APIRouter:
             sym: {
                 "running": bot.is_hft_running(sym),
                 "params": bot.hft_params.get(sym) or {},
-                **({"auto_hft_state": bot._auto_hft_state.get(sym) or {}} if extra else {}),
+                **({"auto_hft_state": bot.auto_hft_state.get(sym) or {}} if extra else {}),
             }
             for sym in bot.symbols
         }
 
     @router.get("/mode/status")
     async def mode_status():
-        return {"mode": bot.mode, "auto_hft_enabled": bot._auto_hft_enabled_effective(), "hft": _hft_status(True),
+        return {"mode": bot.mode, "auto_hft_enabled": bot.auto_hft_enabled_effective(), "hft": _hft_status(True),
                 "timestamp": _now()}
 
     @router.post("/mode/set")
@@ -182,7 +183,7 @@ def build(bot) -> APIRouter:
         for o in bybit_orders:
             oid = str(o.get("orderId"))
             link = str(o.get("orderLinkId") or "")
-            row = {
+            row: Dict[str, Any] = {
                 "orderId": oid,
                 "symbol": str(o.get("symbol") or ""),
                 "status": str(o.get("orderStatus") or ""),
@@ -196,11 +197,11 @@ def build(bot) -> APIRouter:
             }
             payload_rows.append(row)
             if row["symbol"]:
-                bot._set_order_status(oid, row["symbol"], row["status"].lower(), o)
+                bot.set_order_status(oid, row["symbol"], row["status"].lower(), o)
         orphans = [r for r in payload_rows if not r["tracked_in_db"]]
         now = datetime.now(timezone.utc)
         return {
-            "last_sync": bot._last_orders_sync_results or {},
+            "last_sync": bot.last_orders_sync_results or {},
             "agent_last_tick_ts": bot.agent_last_tick_ts,
             "auto_agent_enabled": bool(cfg.AUTO_AGENT_ENABLED),
             "bybit_open_orders": len(bybit_orders),
@@ -217,7 +218,7 @@ def build(bot) -> APIRouter:
                     "action": t.action,
                     "status": t.outcome_status,
                     "timestamp": t.timestamp.isoformat(),
-                    "seconds_elapsed": (now - utc_aware(t.timestamp)).total_seconds(),
+                    "seconds_elapsed": (now - (utc_aware(t.timestamp) or now)).total_seconds(),
                     "present_in_bybit_open_orders": str(t.order_id) in open_ids
                     or trade_order_link_id(t) in open_links,
                 }
@@ -261,10 +262,10 @@ def build(bot) -> APIRouter:
     # --------------------------------------------------------- auditing
     @router.get("/decisions/{symbol}")
     async def get_decisions_audit(symbol: str, db: Session = Depends(get_db)):
-        metrics = dict(bot._last_metrics_by_symbol.get(symbol) or {})
+        metrics = dict(bot.last_metrics_by_symbol.get(symbol) or {})
         if not metrics:
-            metrics = bot.compute_metrics(symbol, bot._candles_for(symbol, db))[0]
-        detail = bot._decision_detail(symbol, metrics)
+            metrics = bot.compute_metrics(symbol, bot.candles_for(symbol, db))[0]
+        detail = bot.decision_detail(symbol, metrics)
         ctx = bot.operations.get(symbol) if bot.operations is not None else None
         pending = db.query(Trade).filter(Trade.symbol == symbol, Trade.outcome_status.in_(OPEN_STATUSES)).count()
         gates: Dict[str, Any] = {
@@ -286,7 +287,7 @@ def build(bot) -> APIRouter:
             gates["blocked_by"] = "live_trading_disabled"
         else:
             gates["blocked_by"] = None
-        window = bot._metrics_window.get(symbol) or []
+        window = bot.metrics_window.get(symbol) or []
         return {
             "symbol": symbol,
             "decision_detail": detail,
@@ -301,7 +302,7 @@ def build(bot) -> APIRouter:
         snap = bot.operations.snapshot() if bot.operations is not None else {}
         for sym in bot.symbols:
             if sym in snap:
-                snap[sym]["decisions_window_len"] = len(bot._metrics_window.get(sym) or [])
+                snap[sym]["decisions_window_len"] = len(bot.metrics_window.get(sym) or [])
         return snap
 
     return router

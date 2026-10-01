@@ -24,7 +24,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from signal_engine import RAW_DEFAULT_WEIGHTS, SignalParams
 
@@ -341,7 +341,7 @@ SETTINGS: Tuple[Setting, ...] = (
       "Pesos por defecto del combined (pio, egm, ild, rol, ogm, mom, tfi, scale).", "signal",
       normalize=_weights_dict),
     S("SIGNAL_PARAMS_JSON", "json", {},
-      "Overrides de parámetros del motor de señal (ver signal_engine.SignalParams).", "signal",
+      "Overrides de parámetros del motor de señal (ver SignalParams en signal_engine).", "signal",
       normalize=_signal_params),
     S("FORMULAS_JSON", "json", dict(DEFAULT_FORMULAS), "Fórmulas TSM derivadas.", "signal",
       normalize=_formulas_dict),
@@ -445,7 +445,7 @@ SETTINGS: Tuple[Setting, ...] = (
     S("API_HOST", "str", "0.0.0.0", "Host del servidor standalone.", "api"),
     S("API_PORT", "int", 8081, "Puerto del servidor standalone.", "api", 1, 65535),
     S("SYMBOL_OVERRIDES_JSON", "json", {},
-      'Overrides por símbolo, p.ej. {"XRPUSDT": {"MAX_TRADE_SIZE": 500, "RISK_FACTOR": 0.02}}.', "general",
+      'Overrides por símbolo, p. ej. {"XRPUSDT": {"MAX_TRADE_SIZE": 500, "RISK_FACTOR": 0.02}}.', "general",
       normalize=_dict_of_dicts),
     S("DEFAULT_SLEEP_TIME", "int", 10, "Legacy.", "general", 0, None),
     S("RATE_LIMIT_DELAY", "int", 50, "Legacy.", "general", 0, None),
@@ -473,8 +473,18 @@ class ConfigSettings:
     """Configuración viva del motor.
 
     Atributos en MAYÚSCULAS = valores validados de ``SETTINGS``. Asignar un
-    atributo registrado (``config.X = v``) valida y coacciona igual que el .env.
+    atributo registrado (``config.X = v``) aplica la misma validación y coerción que el archivo .env.
     """
+
+    # Solo anotaciones (sin valor): los atributos reales se crean en __init__.
+    _changes: Deque[Dict[str, Any]]
+    FORMULAS_JSON: Dict[str, str]
+
+    if TYPE_CHECKING:
+        # Las claves de SETTINGS se asignan dinámicamente con object.__setattr__;
+        # esto le indica al IDE / type checker que existen (sin efecto en runtime).
+        def __getattr__(self, name: str) -> Any:
+            ...
 
     def __init__(self, env: Optional[Mapping[str, str]] = None) -> None:
         source = os.environ if env is None else env
@@ -591,14 +601,16 @@ class ConfigSettings:
     def is_bot_order_link(self, link: Any) -> bool:
         return isinstance(link, str) and bool(link) and link.startswith(self.ORDER_LINK_PREFIX)
 
-    def resolve_path(self, raw: str, project_root: str) -> str:
+    @staticmethod
+    def resolve_path(raw: str, project_root: str) -> str:
         path = str(raw or "").strip()
         if not os.path.isabs(path):
             path = os.path.join(project_root, path)
         return os.path.abspath(path)
 
     # ------------------------------------------------------------ introspect
-    def schema(self) -> List[Dict[str, Any]]:
+    @staticmethod
+    def schema() -> List[Dict[str, Any]]:
         return [s.describe() for s in SETTINGS]
 
     def as_dict(self, *, include_secrets: bool = False) -> Dict[str, Any]:

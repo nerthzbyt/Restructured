@@ -8,9 +8,11 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from nertz_core.db import ThresholdSnapshot, Trade
+from nertz_core.engine.host import EngineHost
 from signal_engine import Thresholds, blend_thresholds_symmetric, relax_thresholds_symmetric
 
 logger = logging.getLogger("NertzMetalEngine")
@@ -24,7 +26,7 @@ def _median(values: List[float]) -> Optional[float]:
     return float(v[mid]) if len(v) % 2 else float((v[mid - 1] + v[mid]) / 2)
 
 
-class AutomationMixin:
+class AutomationMixin(EngineHost):
     # ----------------------------------------------------------- helpers
     def _recent_decisions(self, symbols: List[str], window_s: float, limit: int) -> tuple[List[str], List[float]]:
         """Decisiones (y combined) recientes en ventana, del más nuevo al más viejo."""
@@ -98,14 +100,15 @@ class AutomationMixin:
             last_train = float(self._ml_last_train_ts.get("__all__", 0.0) or 0.0)
             try:
                 final_count = int(db.query(Trade).filter(Trade.outcome_status == "final").count())
-            except Exception:
+            except SQLAlchemyError:
                 final_count = None
             fast = final_count is not None and final_count >= int(cfg.ML_MIN_SAMPLES) and "__all__" not in self._ml_models
             due = now_ts - last_train >= float(cfg.AUTO_AGENT_TRAIN_INTERVAL_MIN) * 60.0
             if fast or due:
                 res = self.train_ml_model_from_trades(db, symbol=None)
                 self._ml_last_train_ts["__all__"] = now_ts
-                model = res.get("model") if isinstance(res.get("model"), dict) else {}
+                model_raw = res.get("model")
+                model: Dict[str, Any] = model_raw if isinstance(model_raw, dict) else {}
                 actions.append({
                     "type": "ml_train",
                     "ts": datetime.now(timezone.utc).isoformat(),
@@ -139,7 +142,7 @@ class AutomationMixin:
         actions.append({"type": "relax_thresholds", "ts": datetime.now(timezone.utc).isoformat(), **info})
         await self._record_event({"type": "agent_action", "action": "relax_thresholds", **info})
 
-    async def _enable_secondary_systems_if_due(self, db: Session) -> None:
+    async def _enable_secondary_systems_if_due(self, _db: Session) -> None:
         """Con AUTO_ENABLE_SECONDARY_SYSTEMS=true activa el agente tras el retardo de arranque.
 
         (Antes se activaba siempre, ignorando la configuración.)
@@ -202,7 +205,7 @@ class AutomationMixin:
     def _auto_hft_enabled_effective(self) -> bool:
         return bool(self.config.AUTO_HFT_ENABLED) or bool(self._auto_hft_enabled)
 
-    async def _auto_hft_tick(self, db: Session) -> None:
+    async def _auto_hft_tick(self, _db: Session) -> None:
         cfg = self.config
         if not self.running or not self._auto_hft_enabled_effective():
             return

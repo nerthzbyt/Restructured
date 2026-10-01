@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from nertz_core.accounting import capital_view, executed_entry, pnl_summary
 from nertz_core.db import OPEN_STATUSES, MetricSnapshot, Trade, latest_valid_balance
+from nertz_core.engine.host import EngineHost
 from utils import (
     append_metrics_snapshot,
     append_results_event,
@@ -32,7 +33,7 @@ try:
 except ImportError:  # pragma: no cover
     MetricRow = None  # type: ignore[assignment]
 
-_THRESHOLD_ENV_KEYS = (
+THRESHOLD_ENV_KEYS = (
     "EGM_BUY_THRESHOLD",
     "EGM_SELL_THRESHOLD",
     "COMBINED_BUY_THRESHOLD",
@@ -67,7 +68,7 @@ def persist_values_to_env(env_path: str, values: Dict[str, Any]) -> Dict[str, An
         return {"success": False, "message": str(e), "path": env_path, "values": values}
 
 
-class ReportingMixin:
+class ReportingMixin(EngineHost):
     # ---------------------------------------------------------- basics
     @property
     def _logs_dir(self) -> str:
@@ -87,7 +88,7 @@ class ReportingMixin:
         }
 
     def persist_thresholds_to_env(self) -> Dict[str, Any]:
-        values = {k: float(getattr(self.config, k)) for k in _THRESHOLD_ENV_KEYS}
+        values = {k: float(getattr(self.config, k)) for k in THRESHOLD_ENV_KEYS}
         return persist_values_to_env(self.paths.env_file, values)
 
     @staticmethod
@@ -180,7 +181,8 @@ class ReportingMixin:
                                       "decision": str(decision), "metrics": stored, "thresholds": thresholds})
 
     # -------------------------------------------------- trade serializer
-    def _normalize_outcome_status(self, value: Any) -> str:
+    @staticmethod
+    def _normalize_outcome_status(value: Any) -> str:
         return value if isinstance(value, str) and value.strip() else "legacy"
 
     def _serialize_trade_for_api(self, t: Trade) -> Dict[str, Any]:
@@ -201,10 +203,11 @@ class ReportingMixin:
             except (TypeError, ValueError):
                 return None
 
-        snapshot = raw.get("metrics_snapshot") if raw else None
-        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        snapshot_raw = raw.get("metrics_snapshot") if raw else None
+        snapshot: Dict[str, Any] = snapshot_raw if isinstance(snapshot_raw, dict) else {}
         # Las métricas viven en snapshot["metrics"] (antes se leían del nivel superior y salían siempre 0).
-        m = snapshot.get("metrics") if isinstance(snapshot.get("metrics"), dict) else snapshot
+        metrics_raw = snapshot.get("metrics")
+        m: Dict[str, Any] = metrics_raw if isinstance(metrics_raw, dict) else snapshot
 
         def _m(*keys: str) -> float:
             for k in keys:
@@ -349,7 +352,7 @@ class ReportingMixin:
             results["last_trade"] = self._serialize_trade_for_api(trade_result)
         return results
 
-    async def _save_results(self, symbol: Optional[str], trade_result: Optional[Trade]) -> None:
+    async def _save_results(self, _symbol: Optional[str], trade_result: Optional[Trade]) -> None:
         with self.SessionLocal() as db:
             trades_all = db.query(Trade).order_by(Trade.timestamp.asc()).all()
             latest_balance = latest_valid_balance(db)

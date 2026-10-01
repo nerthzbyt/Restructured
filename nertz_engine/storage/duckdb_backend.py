@@ -141,9 +141,9 @@ class AsyncBatchWriter:
             if signal_done or self._force_flush.is_set():
                 # flush() debe persistir todo lo encolado hasta ese momento, no solo el lote en curso.
                 while not self._queue.empty():
-                    queued = self._queue.get_nowait()
-                    if queued is not None:
-                        pending.append(queued)
+                    extra = self._queue.get_nowait()
+                    if extra is not None:
+                        pending.append(extra)
                     elif not self._running:
                         self._queue.put_nowait(None)
                         break
@@ -159,8 +159,9 @@ class AsyncBatchWriter:
             while self._running or not self._queue.empty():
                 get_task = asyncio.create_task(self._queue.get())
                 flush_task = asyncio.create_task(self._force_flush.wait())
+                done: set[asyncio.Task[Any]] = set()
                 try:
-                    done, pending_tasks = await asyncio.wait(
+                    done, _ = await asyncio.wait(
                         {get_task, flush_task},
                         timeout=self._flush_interval_s,
                         return_when=asyncio.FIRST_COMPLETED,
@@ -272,14 +273,30 @@ class DuckDBBackend:
         if self._conn is not None:
             try:
                 self._conn.close()
-            except Exception:
-                pass
+            except duckdb.Error:
+                logger.debug("DuckDB close failed", exc_info=True)
             self._conn = None
 
-    def _connect(self) -> None:
+    def connect(self) -> None:
         """Open a persistent RW connection (migration/CLI helpers only)."""
         with self._lock:
             self._ensure_rw_connection_locked()
+
+    def close(self) -> None:
+        """Close the RW connection synchronously (migration/CLI helpers only)."""
+        with self._lock:
+            self._reset_rw_connection_locked()
+            self._schema_ready = False
+
+    def insert_metrics_now(self, rows: Sequence[MetricRow]) -> None:
+        """Write metric rows synchronously, bypassing the async batch writer."""
+        with self._lock:
+            self._insert_metrics(self._ensure_rw_connection_locked(), rows)
+
+    def insert_events_now(self, rows: Sequence[EventRow]) -> None:
+        """Write event rows synchronously, bypassing the async batch writer."""
+        with self._lock:
+            self._insert_events(self._ensure_rw_connection_locked(), rows)
 
     def _write_batch(self, batch: Sequence[_QueuedRecord]) -> None:
         if not batch:
@@ -320,7 +337,8 @@ class DuckDBBackend:
             logger.exception("DuckDB batch write failed (%d records)", len(batch))
             raise
 
-    def _insert_ticks(self, conn: duckdb.DuckDBPyConnection, rows: Sequence[TickRow]) -> None:
+    @staticmethod
+    def _insert_ticks(conn: duckdb.DuckDBPyConnection, rows: Sequence[TickRow]) -> None:
         conn.executemany(
             """
             INSERT INTO market_ticks (
@@ -341,7 +359,8 @@ class DuckDBBackend:
             ],
         )
 
-    def _insert_orderbooks(self, conn: duckdb.DuckDBPyConnection, rows: Sequence[OrderbookRow]) -> None:
+    @staticmethod
+    def _insert_orderbooks(conn: duckdb.DuckDBPyConnection, rows: Sequence[OrderbookRow]) -> None:
         conn.executemany(
             """
             INSERT INTO orderbook_snapshots (timestamp, symbol, bids, asks)
@@ -358,7 +377,8 @@ class DuckDBBackend:
             ],
         )
 
-    def _insert_metrics(self, conn: duckdb.DuckDBPyConnection, rows: Sequence[MetricRow]) -> None:
+    @staticmethod
+    def _insert_metrics(conn: duckdb.DuckDBPyConnection, rows: Sequence[MetricRow]) -> None:
         conn.executemany(
             """
             INSERT INTO metric_snapshots (
@@ -386,7 +406,8 @@ class DuckDBBackend:
             ],
         )
 
-    def _insert_events(self, conn: duckdb.DuckDBPyConnection, rows: Sequence[EventRow]) -> None:
+    @staticmethod
+    def _insert_events(conn: duckdb.DuckDBPyConnection, rows: Sequence[EventRow]) -> None:
         conn.executemany(
             """
             INSERT INTO engine_events (
@@ -413,39 +434,31 @@ class DuckDBBackend:
     async def start(self) -> None:
         await asyncio.to_thread(self._bootstrap_schema)
         if self._writer is None:
-            self._writer = AsyncBatchWriter(
+            writer = AsyncBatchWriter(
                 flush_interval_ms=self._flush_interval_ms,
                 write_batch=self._write_batch,
             )
-            await self._writer.start()
+            self._writer = writer
+            await writer.start()
 
     async def stop(self) -> None:
         if self._writer is not None:
             await self._writer.stop()
             self._writer = None
 
-        def _close() -> None:
-            with self._lock:
-                self._reset_rw_connection_locked()
-                self._schema_ready = False
-
-        await asyncio.to_thread(_close)
+        await asyncio.to_thread(self.close)
 
     async def enqueue_tick(self, row: TickRow) -> None:
-        await self._ensure_writer()
-        await self._writer.enqueue(_QueuedRecord(_RecordKind.TICK, row))
+        await self._require_writer().enqueue(_QueuedRecord(_RecordKind.TICK, row))
 
     async def enqueue_orderbook(self, row: OrderbookRow) -> None:
-        await self._ensure_writer()
-        await self._writer.enqueue(_QueuedRecord(_RecordKind.ORDERBOOK, row))
+        await self._require_writer().enqueue(_QueuedRecord(_RecordKind.ORDERBOOK, row))
 
     async def enqueue_metric(self, row: MetricRow) -> None:
-        await self._ensure_writer()
-        await self._writer.enqueue(_QueuedRecord(_RecordKind.METRIC, row))
+        await self._require_writer().enqueue(_QueuedRecord(_RecordKind.METRIC, row))
 
     async def enqueue_event(self, row: EventRow) -> None:
-        await self._ensure_writer()
-        await self._writer.enqueue(_QueuedRecord(_RecordKind.EVENT, row))
+        await self._require_writer().enqueue(_QueuedRecord(_RecordKind.EVENT, row))
 
     async def flush(self) -> None:
         if self._writer is None:
@@ -471,13 +484,12 @@ class DuckDBBackend:
                 ("metric_snapshots", "metric_snapshots"),
             ):
                 try:
-                    out["counts"][key] = int(
-                        conn.execute(
-                            f"SELECT COUNT(*) FROM {table} WHERE symbol = ?",
-                            [sym],
-                        ).fetchone()[0]
-                    )
-                except Exception:
+                    count_row = conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE symbol = ?",
+                        [sym],
+                    ).fetchone()
+                    out["counts"][key] = int(count_row[0]) if count_row else 0
+                except duckdb.Error:
                     out["counts"][key] = 0
 
             tick_rows = conn.execute(
@@ -519,12 +531,12 @@ class DuckDBBackend:
                 if isinstance(bids, str):
                     try:
                         bids = json.loads(bids)
-                    except Exception:
+                    except ValueError:
                         bids = []
                 if isinstance(asks, str):
                     try:
                         asks = json.loads(asks)
-                    except Exception:
+                    except ValueError:
                         asks = []
                 ob_out.append(
                     {
@@ -557,7 +569,7 @@ class DuckDBBackend:
                 elif isinstance(metrics_raw, str) and metrics_raw.strip():
                     try:
                         metrics_obj = json.loads(metrics_raw)
-                    except Exception:
+                    except ValueError:
                         metrics_obj = {}
                 met_out.append(
                     {
@@ -621,7 +633,7 @@ class DuckDBBackend:
             if isinstance(metrics, str):
                 try:
                     metrics = json.loads(metrics)
-                except Exception:
+                except ValueError:
                     continue
             if not isinstance(metrics, dict):
                 continue
@@ -642,9 +654,10 @@ class DuckDBBackend:
         """Muestras crudas recientes (orden cronológico) para rehidratar z-scores tras reinicio."""
         return await asyncio.to_thread(self._fetch_metric_history_sync, symbol, float(window_s), int(max_rows))
 
-    async def _ensure_writer(self) -> None:
+    def _require_writer(self) -> AsyncBatchWriter:
         if self._writer is None:
             raise RuntimeError("DuckDBBackend.start() must be called before enqueueing records")
+        return self._writer
 
     @staticmethod
     def utcnow() -> datetime:

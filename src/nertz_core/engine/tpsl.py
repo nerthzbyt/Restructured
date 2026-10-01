@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from nertz_core.accounting import executed_entry, trade_pnl
 from nertz_core.db import OPEN_STATUSES, Trade, merge_raw
+from nertz_core.engine.host import EngineHost
 
 logger = logging.getLogger("NertzMetalEngine")
 
@@ -66,19 +67,19 @@ def trail_levels(
 
 def trigger_reason(action: str, last_price: float, tp: float, sl: float) -> Optional[str]:
     if action == "buy":
-        if tp > 0 and last_price >= tp:
+        if 0 < tp <= last_price:
             return "tp"
         if sl > 0 and last_price <= sl:
             return "sl"
     else:
         if tp > 0 and last_price <= tp:
             return "tp"
-        if sl > 0 and last_price >= sl:
+        if 0 < sl <= last_price:
             return "sl"
     return None
 
 
-class TPSLMixin:
+class TPSLMixin(EngineHost):
     async def _auto_tpsl_tick(self, db: Session) -> Dict[str, Any]:
         cfg = self.config
         if not self.running:
@@ -97,7 +98,7 @@ class TPSLMixin:
                 return {"success": True, "results": {"skipped": 1, "reason": "rate_limited"}}
             self._auto_tpsl_last_tick_ts = now_ts
 
-            results = dict.fromkeys(("checked", "amended", "db_updated", "skipped", "errors", "executed_virtual"), 0)
+            results: Dict[str, int] = dict.fromkeys(("checked", "amended", "db_updated", "skipped", "errors", "executed_virtual"), 0)
             trades = (
                 db.query(Trade)
                 .filter(Trade.outcome_status.in_(OPEN_STATUSES))
